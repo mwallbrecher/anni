@@ -27,16 +27,16 @@ Without an agent: `node src/cli.js examples/demo.css`
 ## Hosted anni (connect any agent, nothing to install)
 
 The same editor runs on Cloudflare Workers as a **remote MCP server** (Streamable HTTP), so anyone can point
-Claude Code, Codex or any other MCP client at it:
+Claude Code, Codex or any other MCP client at it. The public instance is **https://anni.run**:
 
 ```bash
-claude mcp add --transport http anni https://anni.example.com/mcp
+claude mcp add --transport http anni https://anni.run/mcp
 ```
 
 ```toml
 # Codex: ~/.codex/config.toml
 [mcp_servers.anni]
-url = "https://anni.example.com/mcp"
+url = "https://anni.run/mcp"
 ```
 
 Hosted anni can't touch your disk, so the agent does the file I/O: it reads the file(s) and passes their
