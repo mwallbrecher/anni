@@ -1,0 +1,27 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "anni",
+  "main": "worker/index.js",
+  "compatibility_date": "2025-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "ANNI_SESSION", "class_name": "AnniSession" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AnniSession"] }],
+  "assets": { "directory": "./web", "binding": "ASSETS", "run_worker_first": true },
+  "observability": { "enabled": true },
+  // ANNI_HOST: the host the root site runs on (e.g. "anni.example.com"). ANNI_URL_MODE "subdomain"
+  // gives every session its own origin <id>.<ANNI_HOST> (needs the wildcard route below and a
+  // wildcard DNS record); "path" serves sessions as /s/<id>/ on one origin (workers.dev, local dev).
+  "vars": { "ANNI_HOST": "", "ANNI_URL_MODE": "path" },
+  "env": {
+    "production": {
+      "vars": { "ANNI_HOST": "anni.run", "ANNI_URL_MODE": "subdomain" },
+      "routes": [
+        { "pattern": "anni.run", "custom_domain": true },
+        { "pattern": "*.anni.run/*", "zone_name": "anni.run" }
+      ],
+      "durable_objects": { "bindings": [{ "name": "ANNI_SESSION", "class_name": "AnniSession" }] }
+    }
+  }
+}

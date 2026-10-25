@@ -21,17 +21,21 @@ const LONGHANDS = {
 };
 
 export const isHtml = (file) => /\.html?$/i.test(file);
+export const kindOf = (file) => (isHtml(file) ? 'html' : 'css');
 
-/** Splits the file into CSS chunks: the whole file for .css, every <style> block for .html. */
-export function readSources(file) {
-  const text = fs.readFileSync(file, 'utf8');
-  if (!isHtml(file)) return { text, sources: [{ start: 0, end: text.length, css: text }] };
+/** Splits text into CSS chunks: the whole text for css, every <style> block for html. */
+export function sourcesOf(text, kind) {
+  if (kind !== 'html') return { text, sources: [{ start: 0, end: text.length, css: text }] };
   const sources = [];
   for (const m of text.matchAll(STYLE_RE)) {
     const start = m.index + m[1].length;
     sources.push({ start, end: start + m[2].length, css: m[2] });
   }
   return { text, sources };
+}
+
+export function readSources(file) {
+  return sourcesOf(fs.readFileSync(file, 'utf8'), kindOf(file));
 }
 
 /** Splits on a top-level separator (',' or whitespace), ignoring separators inside parentheses. */
@@ -176,22 +180,29 @@ function keyframesOf(at) {
   return blocks;
 }
 
-function parseFile(file) {
-  const { text, sources } = readSources(file);
-  const roots = sources.map((s) => postcss.parse(s.css, { from: file }));
+function parseText(text, kind, from) {
+  const { sources } = sourcesOf(text, kind);
+  const roots = sources.map((s) => postcss.parse(s.css, { from }));
   return { text, sources, roots, found: analyze(roots) };
 }
 
-/** JSON model of all animations in the file. */
-export function loadModel(file) {
-  const { found } = parseFile(file);
+const parseFile = (file) => parseText(fs.readFileSync(file, 'utf8'), kindOf(file), file);
+
+/** JSON model of all animations in a css/html text. `file` is only a label. */
+export function modelFromText(text, kind, file = kind === 'html' ? 'page.html' : 'styles.css') {
+  const { found } = parseText(text, kind, file);
   const animations = [...found].map(([name, f]) => ({
     name,
     keyframes: keyframesOf(f.at),
     timing: f.usage ? { ...f.usage.timing } : { ...DEFAULT_TIMING, duration: 1000, iterations: 'infinite' },
     usage: f.usage ? { selector: f.usage.rule.selector, kind: f.usage.kind } : null,
   }));
-  return { file, kind: isHtml(file) ? 'html' : 'css', animations };
+  return { file, kind, animations };
+}
+
+/** JSON model of all animations in the file. */
+export function loadModel(file) {
+  return modelFromText(fs.readFileSync(file, 'utf8'), kindOf(file), file);
 }
 
 const normKeyframes = (blocks) =>
@@ -291,9 +302,9 @@ function createAnimation(parsed, anim) {
   writeKeyframes(at, anim.keyframes);
 }
 
-/** Applies the model to a fresh parse of the file and returns the CSS of every source. */
-export function render(file, model) {
-  const parsed = parseFile(file);
+/** Applies the model to a fresh parse of the text and returns the CSS of every source. */
+export function renderText(text, kind, model, from = model.file) {
+  const parsed = parseText(text, kind, from);
   for (const anim of model.animations) {
     const f = parsed.found.get(anim.name);
     if (!f) {
@@ -306,11 +317,22 @@ export function render(file, model) {
   return { ...parsed, css: parsed.roots.map((r) => r.toString()) };
 }
 
-/** Writes the model back into the file. Returns true if the file content changed. */
-export function save(file, model) {
-  const { text, sources, css } = render(file, model);
+export function render(file, model) {
+  return renderText(fs.readFileSync(file, 'utf8'), kindOf(file), model, file);
+}
+
+/** The full text with the model applied – everything outside the edited parts stays byte-identical. */
+export function applyModel(text, kind, model, from) {
+  const { sources, css } = renderText(text, kind, model, from);
   let out = text;
   for (let i = sources.length - 1; i >= 0; i--) out = out.slice(0, sources[i].start) + css[i] + out.slice(sources[i].end);
+  return out;
+}
+
+/** Writes the model back into the file. Returns true if the file content changed. */
+export function save(file, model) {
+  const text = fs.readFileSync(file, 'utf8');
+  const out = applyModel(text, kindOf(file), model, file);
   if (out === text) return false;
   fs.writeFileSync(file, out);
   return true;

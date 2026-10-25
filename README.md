@@ -16,13 +16,55 @@ Then, in Claude Code: *“open the bounce animation from styles.css in anni”*.
 
 Without an agent: `node src/cli.js examples/demo.css`
 
-## MCP tools
+## MCP tools (local)
 
 | Tool | Purpose |
 | --- | --- |
 | `open_animation(file, animation?, preview?)` | Opens a `.css` or `.html` (with `<style>`) in the editor. Reuses the open tab if there is one, otherwise opens a new one. |
 | `get_animation_state()` | Returns the current animation as CSS – including unsaved edits. |
 | `list_animations(file)` | Lists every `@keyframes` in a file with its timing. |
+
+## Hosted anni (connect any agent, nothing to install)
+
+The same editor runs on Cloudflare Workers as a **remote MCP server** (Streamable HTTP), so anyone can point
+Claude Code, Codex or any other MCP client at it:
+
+```bash
+claude mcp add --transport http anni https://anni.example.com/mcp
+```
+
+```toml
+# Codex: ~/.codex/config.toml
+[mcp_servers.anni]
+url = "https://anni.example.com/mcp"
+```
+
+Hosted anni can't touch your disk, so the agent does the file I/O: it reads the file(s) and passes their
+contents to `open_animation(files, file, animation?, preview?)`, which returns a session link for you.
+When you hit **Save**, `wait_for_save(session)` – which the agent calls right after opening – returns
+the full edited file and the agent writes it back. `get_animation_state(session)` and `list_animations(content)`
+work as before. Sessions are unguessable ids; there are no accounts.
+
+### Deploying your own
+
+```bash
+npm install
+npm run dev:worker          # http://localhost:8787 – sessions at /s/<id>/
+npm run deploy              # wrangler deploy --env production
+```
+
+Edit the `production` block in `wrangler.jsonc`:
+
+- `ANNI_HOST` – the host of the root site, e.g. `anni.example.com`.
+- `ANNI_URL_MODE` – `subdomain` gives every session its own origin (`<id>.anni.example.com`), which is what isolates
+  one user's preview page from another's. It needs the wildcard route in the config **and** a proxied wildcard DNS
+  record (`*.anni` → `192.0.2.1`, orange cloud). Note that Cloudflare's free Universal SSL only covers one level
+  (`*.example.com`): a second-level wildcard like `*.anni.example.com` needs Advanced Certificate Manager, or run anni
+  on its own domain (`ANNI_HOST=anni.run`, sessions at `<id>.anni.run`).
+- `path` mode (`/s/<id>/` on one origin) needs no wildcard and works on `workers.dev`, but all sessions share
+  an origin, so a malicious page uploaded to one session could script another. Fine for a trusted team, not for the open web.
+
+Everything is one Durable Object per session (files, live model, open tabs, waiting agents); it fits the free plan.
 
 ## Editor
 

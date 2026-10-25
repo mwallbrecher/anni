@@ -56,8 +56,11 @@ const fmtMs = (ms) => (ms >= 1000 ? `${+(ms / 1000).toFixed(2)}s` : `${Math.roun
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const snapshot = () => JSON.stringify(S.model.animations);
 
+// Hosted sessions may live under /s/<id>/ on a shared origin; locally and on session subdomains BASE is ''.
+const BASE = location.pathname.match(/^\/s\/[^/]+/)?.[0] || '';
+
 async function api(method, url, body) {
-  const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) });
+  const res = await fetch(BASE + url, { method, headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
@@ -89,6 +92,7 @@ async function load({ keepTime = false } = {}) {
   if (!has) {
     $('#file').textContent = '';
     $('#dirty').hidden = true;
+    if (data.hosted) renderConnectCard(data.mcpUrl);
     return;
   }
   S.model = data.model;
@@ -108,6 +112,20 @@ async function load({ keepTime = false } = {}) {
   renderAll();
   loadPreview();
   push();
+}
+
+/** Root of a hosted anni: nothing to edit here, show how an agent connects. */
+function renderConnectCard(mcpUrl) {
+  const cmd = `claude mcp add --transport http anni ${mcpUrl}`;
+  const codex = `[mcp_servers.anni]\nurl = "${mcpUrl}"`;
+  $('.empty-card').replaceChildren(
+    h('span', { class: 'logo big' }),
+    h('h1', {}, 'Connect your agent to anni'),
+    h('p', {}, 'anni is a timeline editor for the CSS animations in your project. Your agent opens one here, you tune it, and the agent writes it back to your files.'),
+    h('p', { class: 'cmd' }, h('span', { class: 'muted' }, 'Claude Code'), h('code', {}, cmd), h('button', { onclick: () => navigator.clipboard.writeText(cmd).then(() => toast('Copied')) }, 'Copy')),
+    h('p', { class: 'cmd' }, h('span', { class: 'muted' }, 'Codex · ~/.codex/config.toml'), h('code', { class: 'block' }, codex), h('button', { onclick: () => navigator.clipboard.writeText(codex).then(() => toast('Copied')) }, 'Copy')),
+    h('p', { class: 'muted' }, 'Then say: “open the bounce animation from styles.css in anni”. Any MCP client that speaks Streamable HTTP works.'),
+  );
 }
 
 function loadPreview() {
@@ -452,7 +470,7 @@ async function saveNow() {
     }
     renderAll();
     push();
-    toast(r.changed ? 'Saved to file' : 'No changes');
+    toast(r.changed ? (S.session.hosted ? 'Saved – your agent can pull it now' : 'Saved to file') : 'No changes');
   } catch (e) {
     toast(`Error: ${e.message}`);
   }
@@ -1580,7 +1598,7 @@ addEventListener('beforeunload', (e) => {
 
 $('#prop-list').replaceChildren(...KNOWN.map((p) => h('option', { value: p })));
 
-const events = new EventSource('/api/events');
+const events = new EventSource(`${BASE}/api/events`);
 events.addEventListener('session', () => load());
 events.addEventListener('external-change', () => {
   if (!S.dirty) return load({ keepTime: true }).then(() => toast('File changed on disk – reloaded'));
