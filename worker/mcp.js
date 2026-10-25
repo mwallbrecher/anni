@@ -75,7 +75,11 @@ export const presentSchema = z.object({
   groups: z.array(z.object({ label: z.string().optional(), controls: z.array(controlSchema).min(1) })).min(1),
 });
 
-const fileSchema = z.object({ path: z.string().describe('Path relative to the project, e.g. "css/styles.css"'), content: z.string().describe('Full text content of the file') });
+const fileSchema = z.object({
+  path: z.string().describe('Path relative to the project, e.g. "css/styles.css"'),
+  content: z.string().describe('Full text content of the file (or base64 with encoding "base64" for fonts/images)'),
+  encoding: z.enum(['utf8', 'base64']).optional(),
+});
 
 export function createServer(env, origin) {
   const server = new McpServer({ name: 'anni', version: '0.2.0' });
@@ -145,10 +149,13 @@ export function createServer(env, origin) {
         const since = since_rev ?? state.rev;
         const r = await call(env, session, `/internal/wait?since=${since}&timeout=${(timeout_seconds ?? 60) * 1000}`);
         if (!r.saved) return text(`No save yet (timeout). The editor ${r.dirty ? 'has unsaved edits' : 'has no pending edits'}. Call wait_for_save again to keep waiting.`);
+        const files = r.files || [{ path: r.file, content: r.content }];
+        const manual = (r.changes || []).filter((c) => !c.applied);
         return {
           content: [
-            { type: 'text', text: `Saved revision ${r.rev}. Write the following content to ${r.file} (full file):` },
-            { type: 'text', text: r.content },
+            { type: 'text', text: `Saved revision ${r.rev}. Write the following ${files.length === 1 ? 'file' : `${files.length} files`} to disk (full content each):` },
+            ...files.flatMap((f) => [{ type: 'text', text: `=== ${f.path} ===` }, { type: 'text', text: f.content }]),
+            ...(manual.length ? [{ type: 'text', text: `Edits anni could not place – apply yourself:\n${JSON.stringify(manual, null, 2)}` }] : []),
             { type: 'text', text: `Current animations:\n${r.state}` },
           ],
         };

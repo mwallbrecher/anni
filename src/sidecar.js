@@ -51,17 +51,30 @@ function findPreviewFor(file) {
   return null;
 }
 
-/** Stylesheets and scripts a page links with relative URLs, so the preview looks like the real page. */
-function linkedAssets(html, dir) {
+const TEXT_EXT = /\.(html?|css|js|mjs|json|svg|txt|map)$/i;
+const isRelative = (ref) => !/^(https?:)?\/\//i.test(ref) && !ref.startsWith('/') && !ref.startsWith('data:') && !ref.startsWith('#');
+
+/** Everything a local page or stylesheet references relatively (stylesheets, scripts, images, fonts), recursively. */
+function linkedAssets(file, seen = new Set()) {
   const out = [];
-  for (const m of html.matchAll(/<(?:link|script)\b[^>]*?(?:href|src)="([^"#?]+)"/g)) {
-    const ref = m[1];
-    if (/^(https?:)?\/\//.test(ref) || ref.startsWith('/') || ref.startsWith('data:')) continue;
-    const abs = path.resolve(dir, ref);
-    if (/\.(css|js|mjs|svg|json)$/i.test(abs) && fs.existsSync(abs)) out.push(abs);
+  const dir = path.dirname(file);
+  const text = fs.readFileSync(file, 'utf8');
+  const refs = /\.html?$/i.test(file)
+    ? [...text.matchAll(/<(?:link|script|img|source|video|audio)\b[^>]*?(?:href|src)="([^"#?]+)"/g)].map((m) => m[1])
+    : [...text.matchAll(/url\(\s*['"]?([^'")]+?)['"]?\s*\)/g)].map((m) => m[1]);
+  for (const ref of refs) {
+    if (!isRelative(ref)) continue;
+    const abs = path.resolve(dir, ref.split(/[?#]/)[0]);
+    if (seen.has(abs) || !fs.existsSync(abs) || !fs.statSync(abs).isFile()) continue;
+    seen.add(abs);
+    out.push(abs);
+    if (/\.css$/i.test(abs)) out.push(...linkedAssets(abs, seen));
   }
   return out;
 }
+
+/** A file as the upload API wants it: text, or base64 for binaries. */
+const readUpload = (abs, rel) => (TEXT_EXT.test(abs) ? { path: rel, content: fs.readFileSync(abs, 'utf8') } : { path: rel, content: fs.readFileSync(abs).toString('base64'), encoding: 'base64' });
 
 /** Minimal unified diff (line LCS), capped so it stays a summary. */
 function unifiedDiff(a, b, label, maxLines = 80) {
@@ -121,16 +134,12 @@ server.registerTool(
       const abs = path.resolve(file);
       if (!fs.existsSync(abs)) throw new Error(`File not found: ${abs}`);
       const prev = /\.html?$/i.test(abs) ? abs : preview ? path.resolve(preview) : findPreviewFor(abs);
-      const paths = new Set([abs, ...(prev ? [prev, ...linkedAssets(fs.readFileSync(prev, 'utf8'), path.dirname(prev))] : []), ...extra_files.map((p) => path.resolve(p))]);
-      // Paths inside the session are relative to the common directory, so the page's relative links keep working.
-      const root = [...paths].map((p) => path.dirname(p)).reduce((r, d) => {
-        while (!d.startsWith(r + path.sep) && d !== r) r = path.dirname(r);
-        return r;
-      });
-      const rel = (p) => path.relative(root, p).split(path.sep).join('/');
-      const files = [...paths].map((p) => ({ path: rel(p), content: fs.readFileSync(p, 'utf8') }));
+      const b = bundle([abs, ...(prev ? [prev, ...linkedAssets(prev)] : []), ...extra_files]);
+      const { files, rel } = b;
       const r = await api('POST', '/api/sessions', { files, file: rel(abs), animation, preview: prev ? rel(prev) : undefined, session });
-      sessions.set(r.session, { file: abs, rel: rel(abs), uploaded: fs.readFileSync(abs, 'utf8'), rev: r.rev });
+      const local = Object.fromEntries(b.abs.map((p) => [rel(p), p]));
+      const uploaded = Object.fromEntries(files.filter((f) => !f.encoding).map((f) => [f.path, f.content]));
+      sessions.set(r.session, { file: abs, rel: rel(abs), uploaded, local, rev: r.rev });
       lastSession = r.session;
       if (!r.clients && !process.env.ANNI_NO_BROWSER) openBrowser(r.url);
       const list = r.animations.map((a) => `- ${a.name}${a.usage ? ` (used by ${a.usage.selector}, ${a.timing.duration}ms)` : ' (not used by any rule)'}`).join('\n');
@@ -138,7 +147,7 @@ server.registerTool(
         [
           `Opened "${r.animation}" from ${abs} in anni: ${r.url}`,
           r.clients ? 'The editor tab that was already open switched to it.' : 'Opened a new browser tab (share the link if it did not appear).',
-          `Preview: ${prev ?? 'demo box (no HTML page found)'} · uploaded ${files.length} file${files.length > 1 ? 's' : ''}`,
+          `Preview: ${prev ?? 'demo box (no HTML page found)'} · uploaded ${files.length} file${files.length > 1 ? 's' : ''}${r.skipped?.length ? ` · skipped (too large): ${r.skipped.join(', ')}` : ''}`,
           `Session: ${r.session}`,
           '',
           'Animations in this file:',
@@ -172,14 +181,28 @@ server.registerTool(
       const r = await api('GET', `/api/sessions/${session}/wait?since=${s.rev}&timeout=${timeout_seconds * 1000}`);
       if (!r.saved) return text(`No save yet (timeout). The editor ${r.dirty ? 'has unsaved edits' : 'has no pending edits'}. Call wait_for_save again to keep waiting.`);
       s.rev = r.rev;
-      const current = fs.readFileSync(s.file, 'utf8');
-      const diff = unifiedDiff(s.uploaded, r.content, s.rel);
-      if (current !== s.uploaded) {
-        return text(`The user saved in anni (revision ${r.rev}), but ${s.file} changed on disk since it was uploaded, so it was NOT overwritten. Apply this diff yourself:\n\n${diff}`);
+      // Every uploaded file anni changed (the animation file, and stylesheets edited in the Editor view) comes back whole.
+      const out = [`Saved revision ${r.rev}.`];
+      for (const f of r.files || [{ path: s.rel, content: r.content }]) {
+        const abs = s.local[f.path];
+        const was = s.uploaded[f.path];
+        if (!abs || was === undefined) {
+          out.push('', `${f.path}: changed in anni but not tracked locally – full content:`, f.content);
+          continue;
+        }
+        const diff = unifiedDiff(was, f.content, f.path);
+        if (fs.readFileSync(abs, 'utf8') !== was) {
+          out.push('', `${abs} changed on disk since it was uploaded, so it was NOT overwritten. Apply this diff yourself:`, diff);
+          continue;
+        }
+        fs.writeFileSync(abs, f.content);
+        s.uploaded[f.path] = f.content;
+        out.push('', `Written to ${abs}:`, diff);
       }
-      fs.writeFileSync(s.file, r.content);
-      s.uploaded = r.content;
-      return text(`Saved revision ${r.rev} – written to ${s.file}.\n\n${diff}\n\nCurrent animations:\n${r.state}`);
+      const manual = (r.changes || []).filter((c) => !c.applied);
+      if (manual.length) out.push('', 'Edits anni could not place in the uploaded files – apply these yourself:', JSON.stringify(manual.map(({ id, label, from, to, source, reason }) => ({ id, label, from, to, source, reason })), null, 2));
+      out.push('', 'Current animations:', r.state);
+      return text(out.join('\n'));
     } catch (e) {
       return fail(e);
     }
@@ -201,8 +224,128 @@ function bundle(paths) {
         })
     : process.cwd();
   const rel = (p) => path.relative(root, path.resolve(p)).split(path.sep).join('/');
-  return { files: abs.map((p) => ({ path: rel(p), content: fs.readFileSync(p, 'utf8') })), rel };
+  return { files: abs.map((p) => readUpload(p, rel(p))), rel, abs };
 }
+
+/* ---------- snapshot_page: a rendered route of a running app as static files anni can show ---------- */
+
+async function fetchBuf(url) {
+  const res = await fetch(url, { headers: { Accept: '*/*' } });
+  if (!res.ok) throw new Error(`${res.status} ${url}`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+const safeName = (u) => {
+  const base = decodeURIComponent(new URL(u).pathname.split('/').pop() || 'index').replace(/[^\w.-]+/g, '_');
+  let h = 0;
+  for (const ch of u) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return `${h.toString(36)}-${base}`.slice(0, 80);
+};
+
+/** Fetches a page and what it needs (stylesheets, fonts, images) into `out`, rewriting references to local paths. */
+async function snapshotPage(url, out, { stripScripts = true } = {}) {
+  fs.mkdirSync(path.join(out, 'assets'), { recursive: true });
+  const report = { css: 0, assets: 0, skipped: [], failed: [] };
+  let html = (await fetchBuf(url)).toString('utf8');
+  const saved = new Map(); // absolute url -> local relative path (from the page)
+  const save = async (abs, rewrite) => {
+    if (saved.has(abs)) return saved.get(abs);
+    try {
+      let buf = await fetchBuf(abs);
+      if (buf.length > 1.5 * 1024 * 1024) {
+        report.skipped.push(abs);
+        return null;
+      }
+      const name = safeName(abs);
+      if (rewrite) buf = Buffer.from(await rewrite(buf.toString('utf8'), abs), 'utf8');
+      fs.writeFileSync(path.join(out, 'assets', name), buf);
+      saved.set(abs, `assets/${name}`);
+      report.assets++;
+      return `assets/${name}`;
+    } catch (e) {
+      report.failed.push(`${abs} (${e.message})`);
+      return null;
+    }
+  };
+  // CSS: pull in fonts/images referenced with url(); the rewritten css sits next to them in assets/.
+  const rewriteCss = async (css, cssUrl) => {
+    const refs = [...new Set([...css.matchAll(/url\(\s*['"]?([^'")]+?)['"]?\s*\)/g)].map((m) => m[1]).filter((r) => !r.startsWith('data:') && !r.startsWith('#')))];
+    for (const ref of refs) {
+      const local = await save(new URL(ref, cssUrl).href);
+      if (local) css = css.split(`(${ref})`).join(`(${local.slice('assets/'.length)})`).split(`('${ref}')`).join(`('${local.slice('assets/'.length)}')`).split(`("${ref}")`).join(`("${local.slice('assets/'.length)}")`);
+    }
+    return css;
+  };
+  const links = [...html.matchAll(/<link\b[^>]*>/g)].map((m) => m[0]);
+  for (const tag of links) {
+    const href = tag.match(/href="([^"]+)"/)?.[1];
+    if (!href) continue;
+    const isStyle = /rel="[^"]*stylesheet/.test(tag) || /as="style"/.test(tag);
+    if (isStyle) {
+      const local = await save(new URL(href, url).href, rewriteCss);
+      if (local) {
+        html = html.replace(tag, tag.replace(href, local));
+        report.css++;
+      }
+    } else if (/rel="[^"]*(icon|preload|modulepreload|prefetch|preconnect|dns-prefetch)/.test(tag)) html = html.replace(tag, '');
+  }
+  for (const m of [...html.matchAll(/<img\b[^>]*\bsrc="([^"]+)"/g)]) {
+    if (m[1].startsWith('data:')) continue;
+    const local = await save(new URL(m[1], url).href);
+    if (local) html = html.split(`src="${m[1]}"`).join(`src="${local}"`);
+  }
+  html = html.replace(/\bsrcset="[^"]*"/g, '');
+  if (stripScripts) html = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '').replace(/<script\b[^>]*\/>/gi, '');
+  html = html.replace(/<base\b[^>]*>/i, '');
+  fs.writeFileSync(path.join(out, 'page.html'), html);
+  return { page: path.join(out, 'page.html'), html, ...report };
+}
+
+server.registerTool(
+  'snapshot_page',
+  {
+    title: 'Snapshot a rendered page',
+    description:
+      'Fetches a route of a running app (dev server, staging, any URL) and writes it as static files anni can show: page.html plus its stylesheets, fonts and images ' +
+      'with references rewritten, scripts removed. Use the returned page path as `preview` for open_animation or present – the preview then looks like the real app ' +
+      'and anni can edit CSS in it live. Works for any framework that renders to the browser. Reports which @keyframes and source stamps (data-src) the page has.',
+    inputSchema: {
+      url: z.string().describe('URL of the page, e.g. http://localhost:3000/'),
+      out: z.string().optional().describe('Directory to write into (default .anni/snapshot-<host>-<path>)'),
+      keep_scripts: z.boolean().optional().describe('Keep <script> tags (default false: a static snapshot is more faithful than a half-hydrated app)'),
+    },
+  },
+  async ({ url, out, keep_scripts = false }) => {
+    try {
+      const u = new URL(url);
+      const dir = path.resolve(out || path.join('.anni', `snapshot-${u.host.replace(/[^\w.-]+/g, '_')}${u.pathname.replace(/[^\w-]+/g, '_').replace(/_+$/, '') || ''}`));
+      const r = await snapshotPage(u.href, dir, { stripScripts: !keep_scripts });
+      const cssText = fs
+        .readdirSync(path.join(dir, 'assets'))
+        .filter((n) => /\.css$/i.test(n))
+        .map((n) => fs.readFileSync(path.join(dir, 'assets', n), 'utf8'))
+        .join('\n');
+      const keyframes = [...new Set([...cssText.matchAll(/@keyframes\s+([\w-]+)/g)].map((m) => m[1]))];
+      const stamps = (r.html.match(/\bdata-src="/g) || []).length;
+      return text(
+        [
+          `Snapshot of ${u.href} written to ${dir}`,
+          `page: ${r.page} (${(r.html.length / 1024).toFixed(0)} KB) · ${r.css} stylesheet${r.css === 1 ? '' : 's'} · ${r.assets - r.css} fonts/images`,
+          keyframes.length ? `@keyframes in its CSS: ${keyframes.join(', ')}` : 'No @keyframes in its CSS (use present, or create animations in the editor).',
+          stamps ? `${stamps} elements carry data-src="file:line:col" source stamps – use them as code wires.` : 'No data-src source stamps on elements.',
+          r.skipped.length ? `Skipped (too large): ${r.skipped.join(', ')}` : null,
+          r.failed.length ? `Failed: ${r.failed.join(', ')}` : null,
+          '',
+          `Next: open_animation(file, preview: "${r.page}") or present(..., preview: "${r.page}").`,
+        ]
+          .filter(Boolean)
+          .join('\n'),
+      );
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
 
 const fill = (tpl, value) => tpl.replaceAll('{{value}}', value);
 
@@ -285,7 +428,7 @@ server.registerTool(
   async ({ schema, files = [], preview, session }) => {
     try {
       const prev = preview ? path.resolve(preview) : files.map((p) => path.resolve(p)).find((p) => /\.html?$/i.test(p)) || null;
-      const all = [...files, ...(prev ? [prev, ...linkedAssets(fs.readFileSync(prev, 'utf8'), path.dirname(prev))] : [])];
+      const all = [...files, ...(prev ? [prev, ...linkedAssets(prev)] : [])];
       const b = bundle(all);
       const r = await api('POST', '/api/sessions', { files: b.files, preview: prev ? b.rel(prev) : undefined, schema, title: schema.title, session });
       sessions.set(r.session, { kind: 'schema', cwd: process.cwd(), rev: r.rev });

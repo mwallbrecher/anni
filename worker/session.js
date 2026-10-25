@@ -12,7 +12,22 @@ const MIME = {
   '.json': 'application/json',
   '.svg': 'image/svg+xml',
   '.txt': 'text/plain; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.avif': 'image/avif',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.otf': 'font/otf',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
 };
+const MAX_FILE = 1.5 * 1024 * 1024; // per uploaded file (storage values are capped at 2 MB)
+const MAX_TOTAL = 24 * 1024 * 1024;
 const EDITOR_ASSETS = new Set(['/', '/index.html', '/app.js', '/props.js', '/style.css']);
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
@@ -27,10 +42,19 @@ export class AnniSession {
     this.waiters = new Set(); // agents blocked in wait_for_save
     this.live = null; // last model the editor sent (may hold unsaved edits)
     this.dirty = false;
-    this.ready = ctx.storage.get(['files', 'meta']).then((m) => {
-      this.files = m.get('files') || {};
-      this.meta = m.get('meta') || null; // { file, preview, animation, rev, savedAt }
-    });
+    this.ready = this.restore();
+  }
+
+  /** Files are stored one per key (`file:<path>`, text or { b64 }) so a snapshot with fonts fits the per-value limit. */
+  async restore() {
+    const m = await this.ctx.storage.get(['meta', 'files:index', 'files']);
+    this.meta = m.get('meta') || null; // { kind, file, preview, animation, rev, savedAt } or the schema variant
+    this.files = m.get('files') || {}; // legacy single-key layout
+    const index = m.get('files:index') || [];
+    for (let i = 0; i < index.length; i += 100) {
+      const chunk = await this.ctx.storage.get(index.slice(i, i + 100).map((p) => `file:${p}`));
+      for (const [k, v] of chunk) this.files[k.slice(5)] = v;
+    }
   }
 
   /* ---------- helpers ---------- */
@@ -59,7 +83,32 @@ export class AnniSession {
   }
 
   async persist() {
-    await this.ctx.storage.put({ files: this.files, meta: this.meta });
+    const old = (await this.ctx.storage.get('files:index')) || [];
+    const paths = Object.keys(this.files);
+    const gone = old.filter((p) => !(p in this.files)).map((p) => `file:${p}`);
+    if (gone.length) await this.ctx.storage.delete(gone);
+    await this.ctx.storage.delete('files'); // legacy layout
+    const entries = Object.entries(this.files);
+    for (let i = 0; i < entries.length; i += 100) await this.ctx.storage.put(Object.fromEntries(entries.slice(i, i + 100).map(([p, c]) => [`file:${p}`, c])));
+    await this.ctx.storage.put({ meta: this.meta, 'files:index': paths });
+  }
+
+  /** Normalises uploaded files: text stays text, base64 uploads become { b64 }; oversize files are skipped and reported. */
+  static intake(files) {
+    const map = {};
+    const skipped = [];
+    let total = 0;
+    for (const f of files) {
+      const p = f.path.replace(/^\.?\//, '');
+      const size = f.encoding === 'base64' ? Math.floor((f.content.length * 3) / 4) : f.content.length;
+      if (size > MAX_FILE || total + size > MAX_TOTAL) {
+        skipped.push(`${p} (${(size / 1024).toFixed(0)} KB)`);
+        continue;
+      }
+      total += size;
+      map[p] = f.encoding === 'base64' ? { b64: f.content } : f.content;
+    }
+    return { map, skipped };
   }
 
   stateText() {
@@ -128,12 +177,12 @@ body { display: grid !important; place-items: center !important; background: tra
   /* ---------- agent side (called by the MCP tools through the stub) ---------- */
 
   async open({ files = [], file, preview, animation, schema, title }) {
-    const map = {};
-    for (const f of files) map[f.path.replace(/^\.?\//, '')] = f.content;
+    const { map, skipped } = AnniSession.intake(files);
     if (preview) preview = preview.replace(/^\.?\//, '');
-    if (schema) return this.openSchema({ map, preview, schema, title });
+    if (schema) return { ...(await this.openSchema({ map, preview, schema, title })), skipped };
     file = file.replace(/^\.?\//, '');
-    if (!(file in map)) throw new Error(`"${file}" is not among the uploaded files`);
+    if (!(file in map)) throw new Error(`"${file}" is not among the uploaded files${skipped.length ? ` (skipped as too large: ${skipped.join(', ')})` : ''}`);
+    if (typeof map[file] !== 'string') throw new Error(`"${file}" must be uploaded as text`);
     const model = modelFromText(map[file], kindOf(file), file);
     if (!model.animations.length) throw new Error(`No @keyframes found in ${file}`);
     if (animation && !model.animations.some((a) => a.name === animation)) {
@@ -148,7 +197,7 @@ body { display: grid !important; place-items: center !important; background: tra
     this.dirty = false;
     await this.persist();
     this.broadcast('session', { file, animation: this.meta.animation });
-    return { kind: 'css', file, preview, animation: this.meta.animation, animations: model.animations, clients: this.streams.size, rev: this.meta.rev };
+    return { kind: 'css', file, preview, animation: this.meta.animation, animations: model.animations, clients: this.streams.size, rev: this.meta.rev, skipped };
   }
 
   /** A schema session: the agent describes controls (with preview and code wires); anni renders them. */
@@ -194,7 +243,43 @@ body { display: grid !important; place-items: center !important; background: tra
     if (this.isSchema) {
       return { saved, rev: this.meta.rev, dirty: this.dirty, kind: 'schema', title: this.meta.title, changes: this.meta.lastChanges || [], values: this.meta.values, state: this.stateText() };
     }
-    return { saved, rev: this.meta.rev, dirty: this.dirty, kind: 'css', file: this.meta.file, content: this.files[this.meta.file], state: this.stateText() };
+    const files = (this.meta.lastFiles || [this.meta.file]).map((p) => ({ path: p, content: this.files[p] }));
+    return { saved, rev: this.meta.rev, dirty: this.dirty, kind: 'css', file: this.meta.file, content: this.files[this.meta.file], files, changes: this.meta.lastChanges || [], state: this.stateText() };
+  }
+
+  /**
+   * Applies editor-view edits (changed declarations with code wires into uploaded files) to the stored files.
+   * Same contract as the sidecar's applyWire: `find` must occur exactly once. Returns what was applied / left for the agent.
+   */
+  applyEdits(edits) {
+    const applied = [];
+    const manual = [];
+    const touched = new Set();
+    for (const e of edits) {
+      const s = e.source;
+      const file = s?.file?.replace(/^\.?\//, '');
+      if (!s || !(file in this.files) || typeof this.files[file] !== 'string') {
+        manual.push({ ...e, reason: s ? `${s.file} is not an uploaded text file` : 'no source wire' });
+        continue;
+      }
+      const before = this.files[file];
+      let after = null;
+      if (s.find) {
+        const n = before.split(s.find).length - 1;
+        if (n === 1) {
+          const repl = s.replace ? s.replace.replaceAll('{{value}}', e.to) : s.find.includes(e.from) ? s.find.replace(e.from, e.to) : null;
+          if (repl !== null) after = before.replace(s.find, repl);
+        }
+      } else if (s.range) after = before.slice(0, s.range[0]) + (s.template || '{{value}}').replaceAll('{{value}}', e.to) + before.slice(s.range[1]);
+      if (after === null || after === before) {
+        manual.push({ ...e, reason: 'wire did not match exactly once' });
+        continue;
+      }
+      this.files[file] = after;
+      touched.add(file);
+      applied.push({ id: e.id, label: e.label, from: e.from, to: e.to, file });
+    }
+    return { applied, manual, touched };
   }
 
   /** Schema save: records the values, lists what changed since the last save (with each control's code wire). */
@@ -256,22 +341,30 @@ body { display: grid !important; place-items: center !important; background: tra
         return json({ css: renderText(this.files[this.meta.file], kindOf(this.meta.file), model, this.meta.file).css });
       }
       if (route === 'POST /api/save') {
-        const { model, values } = await request.json();
+        const { model, values, edits = [] } = await request.json();
         if (this.isSchema) return json(await this.saveSchema(values || {}));
         const before = this.files[this.meta.file];
-        const after = applyModel(before, kindOf(this.meta.file), model, this.meta.file);
-        const changed = after !== before;
-        this.files[this.meta.file] = after;
+        const after = model ? applyModel(before, kindOf(this.meta.file), model, this.meta.file) : before;
+        const touched = new Set();
+        if (after !== before) {
+          this.files[this.meta.file] = after;
+          touched.add(this.meta.file);
+        }
+        const r = this.applyEdits(edits);
+        for (const f of r.touched) touched.add(f);
+        const changed = touched.size > 0;
         this.live = null;
         this.dirty = false;
         if (changed) {
           this.meta.rev++;
           this.meta.savedAt = Date.now();
+          this.meta.lastFiles = [...touched];
+          this.meta.lastChanges = [...r.applied.map((a) => ({ ...a, applied: true })), ...r.manual.map((m) => ({ id: m.id, label: m.label, from: m.from, to: m.to, source: m.source || null, applied: false, reason: m.reason }))];
         }
         await this.persist();
         for (const w of this.waiters) w.resolve(true);
         this.waiters.clear();
-        return json({ changed, model: this.model(), rev: this.meta.rev });
+        return json({ changed, model: this.model(), rev: this.meta.rev, applied: r.applied, manual: r.manual, files: [...touched] });
       }
 
       if (request.method !== 'GET') return json({ error: 'Not found' }, 404);
@@ -280,6 +373,10 @@ body { display: grid !important; place-items: center !important; background: tra
         const p = decodeURIComponent(url.pathname.slice('/site/'.length));
         if (!(p in this.files)) return text('Not found', 'text/plain', 404);
         let body = this.files[p];
+        if (typeof body !== 'string') {
+          const bytes = Uint8Array.from(atob(body.b64), (c) => c.charCodeAt(0));
+          return new Response(bytes, { headers: { 'Content-Type': MIME[ext(p)] || 'application/octet-stream', 'Cache-Control': 'no-store' } });
+        }
         // Tag the <style> blocks of the edited HTML file so the editor can swap their contents live.
         if (p === this.meta?.file && !this.isSchema && kindOf(p) === 'html') {
           let i = 0;

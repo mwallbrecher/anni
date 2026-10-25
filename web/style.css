@@ -153,6 +153,8 @@ code { font-family: var(--mono); background: var(--panel-2); padding: 1px 5px; b
 .seg button { height: 20px; padding: 0 10px; color: var(--muted); }
 .seg button.on { background: var(--line-2); color: var(--bright); }
 .seg button:disabled { display: none; }
+#view { margin-left: 4px; }
+#view button { padding: 0 14px; }
 #pick.on { background: var(--accent-soft); color: var(--accent); }
 .readout { font-family: var(--mono); font-size: 11px; color: var(--accent); background: var(--accent-soft); height: 20px; padding: 0 8px; white-space: nowrap; }
 .readout:hover { background: var(--accent); color: #fff; }

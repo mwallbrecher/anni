@@ -1,7 +1,7 @@
 // anni editor: loads the open session from the local server, shows the preview in an
 // iframe (same origin), and drives the selected CSS animation with a paused Web Animation.
 
-import { FNS, KNOWN, LENGTH, defaultOf, fmtColor, fmtFns, fmtNum, fmtTokens, parseFns, parseNum, parseTokens, rangeFor, specOf, toHex, toRgba } from './props.js';
+import { FNS, KNOWN, LENGTH, defaultOf, fmtColor, fmtFns, fmtNum, fmtTokens, parseFns, parseNum, parseTokens, rangeFor, specOf, splitTop, toHex, toRgba } from './props.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -40,6 +40,11 @@ const S = {
   el: null, // picked element: { selector, candidates, tag, names }
   view: { span: null, start: 0 }, // visible window of the timeline (ms); span null = whole scene
   zoom: { z: 1, x: 0, y: 0 }, // visual zoom of the preview: scale + translation in px
+  mode2: 'animate', // 'editor' (styles of the picked element) | 'animate' (timeline), Rive-style
+  editorChanges: new Map(), // control id -> { control, value }: declaration edits not yet saved
+  ehistory: [],
+  efuture: [],
+  fileTexts: {}, // uploaded file path -> text, fetched on demand for code wires
 };
 
 const NEW_TIMING = { duration: 1000, delay: 0, easing: 'ease', iterations: '1', direction: 'normal', fill: 'both' };
@@ -97,9 +102,14 @@ async function load({ keepTime = false } = {}) {
   }
   if (S.session.kind === 'schema') return loadSchema(data);
   S.schema = null;
-  $('#timeline').hidden = false;
+  S.editorChanges = new Map();
+  S.ehistory = [];
+  S.efuture = [];
+  S.fileTexts = {};
+  $('#timeline').hidden = S.mode2 === 'editor';
   $('#anim-select').hidden = false;
   $('#mode').hidden = false;
+  $('#view').hidden = false;
   S.model = data.model;
   S.name = S.model.animations.some((a) => a.name === S.session.animation) ? S.session.animation : S.model.animations[0].name;
   S.saved = S.session.dirty ? '' : snapshot();
@@ -150,6 +160,7 @@ function loadSchema(data) {
   $('#timeline').hidden = true;
   $('#anim-select').hidden = true;
   $('#mode').hidden = true;
+  $('#view').hidden = true;
   $('#pick').hidden = true;
   $('#file').textContent = S.session.title;
   $('#file').title = S.session.title;
@@ -259,6 +270,12 @@ function controlEditor(c, value, set) {
   }
   if (c.type === 'color') return colorEditor(value, set) || raw();
   if (c.type === 'text') return raw();
+  if (c.type === 'tokens') {
+    const toks = parseTokens(value);
+    if (!toks) return raw();
+    const fields = toks.map((tok) => numField(tok, tok.unit ? [...new Set([tok.unit, ...LENGTH])] : null, undefined, false, () => set(fmtTokens(toks))));
+    return h('div', { class: 'editor' }, fields.map((f) => f.num));
+  }
   const tok = parseNum(value);
   if (tok.raw !== undefined) return raw();
   const range = c.min !== undefined && c.max !== undefined ? [c.min, c.max, c.step ?? (c.max - c.min > 20 ? 1 : 0.01)] : undefined;
@@ -347,13 +364,15 @@ let pushTimer;
 function push() {
   if (S.schema) return applySchemaPreview();
   clearTimeout(pushTimer);
-  pushTimer = setTimeout(async () => {
-    const seq = ++pushSeq;
-    const { css } = await api('POST', '/api/render', { model: S.model, dirty: S.dirty });
-    if (seq !== pushSeq) return;
-    S.css = css;
-    applyCss();
-  }, 30);
+  pushTimer = setTimeout(pushNow, 30);
+}
+/** Renders the model on the server and swaps the result into the preview; resolves once the preview is current. */
+async function pushNow() {
+  const seq = ++pushSeq;
+  const { css } = await api('POST', '/api/render', { model: S.model, dirty: S.dirty });
+  if (seq !== pushSeq) return;
+  S.css = css;
+  applyCss();
 }
 
 function shorthand(a) {
@@ -379,7 +398,296 @@ function applyCss() {
   });
   const box = doc.getElementById('anni-demo');
   if (box) box.style.animation = shorthand(anim());
+  applyEditorPreview();
   refreshGroups();
+}
+
+/* ---------- Editor view: the styles of the picked element as controls anni generates itself ---------- */
+
+const EDITOR_GROUPS = [
+  ['Layout', /^(display|position|top|right|bottom|left|inset|width|height|min-|max-|margin|padding|gap|flex|grid|align|justify|order|z-index|overflow|box-sizing)/],
+  ['Typography', /^(font|line-height|letter-spacing|text-|color$|white-space|word-|vertical-align)/],
+  ['Appearance', /^(background|border|outline|box-shadow|opacity|filter|backdrop|mix-blend|cursor|visibility)/],
+  ['Transform', /^(transform|translate|scale|rotate|perspective|transition|animation)/],
+];
+const ENUM_PROPS = {
+  display: ['block', 'inline', 'inline-block', 'flex', 'inline-flex', 'grid', 'none'],
+  position: ['static', 'relative', 'absolute', 'fixed', 'sticky'],
+  'text-align': ['left', 'center', 'right', 'justify'],
+  'font-style': ['normal', 'italic'],
+  'text-transform': ['none', 'uppercase', 'lowercase', 'capitalize'],
+  'text-decoration': ['none', 'underline', 'line-through'],
+  visibility: ['visible', 'hidden'],
+  overflow: ['visible', 'hidden', 'auto', 'scroll'],
+  'flex-direction': ['row', 'row-reverse', 'column', 'column-reverse'],
+  'justify-content': ['flex-start', 'center', 'flex-end', 'space-between', 'space-around', 'space-evenly'],
+  'align-items': ['stretch', 'flex-start', 'center', 'flex-end', 'baseline'],
+  'white-space': ['normal', 'nowrap', 'pre', 'pre-wrap'],
+  cursor: ['auto', 'default', 'pointer', 'text', 'move', 'not-allowed', 'grab'],
+  'box-sizing': ['content-box', 'border-box'],
+};
+
+/** Rough CSS specificity of one (non-list) selector as [ids, classes, elements]. */
+function specificity(sel) {
+  const ids = (sel.match(/#[\w-]+/g) || []).length;
+  const classes = (sel.match(/\.[\w-]+|\[[^\]]+\]|:(?!:)[\w-]+/g) || []).length;
+  const els = (sel.match(/(^|[\s>+~(])[a-zA-Z][\w-]*/g) || []).length + (sel.match(/::[\w-]+/g) || []).length;
+  return ids * 10000 + classes * 100 + els;
+}
+
+/** Which uploaded file a stylesheet came from, or null (external / unknown). */
+function sheetFile(sheet) {
+  if (sheet.ownerNode?.dataset?.anniSrc !== undefined) return S.session.file; // the edited file, swapped in live
+  if (sheet.href) {
+    const p = new URL(sheet.href).pathname;
+    const i = p.indexOf('/site/');
+    return i >= 0 ? decodeURIComponent(p.slice(i + 6)) : null;
+  }
+  return S.session.kind === 'html' ? S.session.file : null;
+}
+
+/** The declarations that win for `el`, with the rule each comes from. CSSOM is the truth – no styling engine reimplemented. */
+function winningDeclarations(el) {
+  const doc = el.ownerDocument;
+  const win = doc.defaultView;
+  const found = new Map(); // prop -> { value, selector, file, important, score, order }
+  let order = 0;
+  const visit = (rules, file) => {
+    for (const rule of rules) {
+      if (!(rule instanceof win.CSSStyleRule)) {
+        // Grouping rules (@media, @supports, @layer): descend when they apply; never into @keyframes.
+        if (rule instanceof win.CSSKeyframesRule || !rule.cssRules) continue;
+        if (rule.media && !win.matchMedia(rule.media.mediaText).matches) continue;
+        if (rule instanceof win.CSSSupportsRule && !win.CSS.supports(rule.conditionText)) continue;
+        visit(rule.cssRules, file);
+        continue;
+      }
+      if (rule.cssRules?.length) visit(rule.cssRules, file); // CSS nesting
+      const parts = rule.selectorText.split(',').map((s) => s.trim());
+      let best = -1;
+      for (const part of parts) {
+        if (/::|:hover|:focus|:active|:visited/.test(part)) continue;
+        try {
+          if (el.matches(part)) best = Math.max(best, specificity(part));
+        } catch {}
+      }
+      if (best < 0) continue;
+      order++;
+      // cssText serialises back to the authored shorthands (padding: 8px 16px), which is what the source file holds.
+      for (const decl of splitTop(rule.style.cssText, ';')) {
+        const i = decl.indexOf(':');
+        if (i < 0) continue;
+        const prop = decl.slice(0, i).trim();
+        if (prop.startsWith('--') || /^animation/.test(prop)) continue;
+        let value = decl.slice(i + 1).trim();
+        const important = /!important$/.test(value);
+        if (important) value = value.replace(/\s*!important$/, '');
+        const score = (important ? 1e9 : 0) + best * 1000 + order;
+        const cur = found.get(prop);
+        if (!cur || score >= cur.score) found.set(prop, { value, selector: rule.selectorText, file, important, score, order });
+      }
+    }
+  };
+  for (const sheet of doc.styleSheets) {
+    const node = sheet.ownerNode;
+    if (node?.dataset?.anniOverlay !== undefined || node?.id === 'anni-editor' || node?.id === 'anni-schema') continue; // anni's own styles
+    let rules;
+    try {
+      rules = sheet.cssRules;
+    } catch {
+      continue;
+    }
+    visit(rules, sheetFile(sheet));
+  }
+  for (const prop of el.style) found.set(prop, { value: el.style.getPropertyValue(prop), selector: null, file: null, important: true, score: Infinity, order: Infinity, inline: true });
+  return found;
+}
+
+/** Generates the Editor schema for an element: one control per winning declaration, grouped like a design tool. */
+function editorSchemaFor(el) {
+  const decls = winningDeclarations(el);
+  const groups = EDITOR_GROUPS.map(([label]) => ({ label, controls: [] }));
+  const other = { label: 'Other', controls: [] };
+  for (const [prop, d] of decls) {
+    const selector = d.inline ? S.el?.selector : d.selector;
+    const c = { id: `${d.inline ? 'inline' : d.selector}|${prop}`, label: prop, value: d.value, selector, prop, file: d.file, ...controlFor(prop, d.value) };
+    c.preview = { css: { selector, prop, important: d.important || d.inline } };
+    if (d.file && !d.inline) c.sourceHint = d.file.split('/').pop();
+    const gi = EDITOR_GROUPS.findIndex(([, re]) => re.test(prop));
+    (gi >= 0 ? groups[gi] : other).controls.push(c);
+  }
+  return { title: S.el?.tag || 'Element', groups: [...groups, other].filter((g) => g.controls.length) };
+}
+
+function controlFor(prop, value) {
+  if (/color$|^(fill|stroke|background)$/.test(prop) && toRgba(value)) return { type: 'color' };
+  if (prop === 'opacity') return { type: 'number', min: 0, max: 1, step: 0.01 };
+  if (prop === 'font-weight' && /^\d+$/.test(value)) return { type: 'number', min: 100, max: 900, step: 100 };
+  if (ENUM_PROPS[prop]) return { type: 'enum', options: [...new Set([...ENUM_PROPS[prop], value])] };
+  const tok = parseNum(value);
+  if (tok.raw === undefined) {
+    if (!tok.unit) return { type: 'number', min: 0, max: Math.max(tok.n * 2, 10), step: tok.n >= 10 ? 1 : 0.1 };
+    const [lo, hi, step] = rangeFor(tok);
+    const canBeNegative = /^(margin|top|right|bottom|left|inset|translate|letter-spacing|text-indent|word-spacing)/.test(prop);
+    return { type: 'length', min: canBeNegative ? Math.min(lo, 0) : 0, max: Math.max(hi, tok.n * 2), step, units: [...new Set([tok.unit, ...LENGTH])] };
+  }
+  if (parseTokens(value)) return { type: 'tokens' }; // "8px 16px", "1px solid" is text, "0 auto" is text
+  return { type: 'text' };
+}
+
+const editorValue = (c) => S.editorChanges.get(c.id)?.value ?? c.value;
+
+function setEditorValue(c, value) {
+  if (S.pendingCommit !== false) {
+    if (S.pendingCommit === true) commitEditor();
+    S.pendingCommit = 'done';
+  } else commitEditor();
+  if (value === c.value) S.editorChanges.delete(c.id);
+  else S.editorChanges.set(c.id, { control: c, value });
+  afterEditorChange();
+}
+function commitEditor() {
+  S.ehistory.push(new Map(S.editorChanges));
+  if (S.ehistory.length > 200) S.ehistory.shift();
+  S.efuture = [];
+}
+function afterEditorChange() {
+  S.dirty = snapshot() !== S.saved || S.editorChanges.size > 0;
+  applyEditorPreview();
+  renderHeader();
+  for (const row of document.querySelectorAll('#inspector .prop[data-id]')) row.classList.toggle('changed', S.editorChanges.has(row.dataset.id));
+}
+function undoEditor() {
+  if (!S.ehistory.length) return;
+  S.efuture.push(new Map(S.editorChanges));
+  S.editorChanges = S.ehistory.pop();
+  afterEditorChange();
+  renderInspector();
+}
+function redoEditor() {
+  if (!S.efuture.length) return;
+  S.ehistory.push(new Map(S.editorChanges));
+  S.editorChanges = S.efuture.pop();
+  afterEditorChange();
+  renderInspector();
+}
+
+/** All unsaved declaration edits as one <style> in the preview, so they stay visible across element picks. */
+function applyEditorPreview() {
+  const doc = frame.contentDocument;
+  if (!doc?.head || S.schema) return;
+  const css = [...S.editorChanges.values()].map(({ control: c, value }) => `${c.preview.css.selector} { ${c.prop}: ${value}${c.preview.css.important ? ' !important' : ''}; }`).join('\n');
+  let style = doc.getElementById('anni-editor');
+  if (!style && !css) return;
+  if (!style) {
+    style = doc.createElement('style');
+    style.id = 'anni-editor';
+    doc.head.append(style);
+  }
+  if (style.textContent !== css) style.textContent = css;
+}
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const normSel = (s) => s.replace(/\s+/g, ' ').replace(/\s*,\s*/g, ', ').trim();
+
+/**
+ * Builds the code wire for an edited declaration: a snippet of the file that occurs exactly once and contains
+ * `prop: value;` inside the rule with that selector. Expands upwards line by line until unique.
+ */
+function findSnippet(text, selector, prop, value) {
+  const re = new RegExp(`(^|[;{\\s])(${escapeRe(prop)}\\s*:\\s*${escapeRe(value)}\\s*(!important)?\\s*;?)`, 'g');
+  const hits = [];
+  for (const m of text.matchAll(re)) hits.push({ at: m.index + m[1].length, len: m[2].length });
+  if (!hits.length) return null;
+  const inRule = hits.filter((h) => {
+    const open = text.lastIndexOf('{', h.at);
+    const close = Math.max(text.lastIndexOf('}', open), text.lastIndexOf('{', open - 1));
+    return open >= 0 && normSel(text.slice(close + 1, open)) === normSel(selector);
+  });
+  const hit = inRule[0] || (hits.length === 1 ? hits[0] : null);
+  if (!hit) return null;
+  const declEnd = hit.at + hit.len;
+  let start = text.lastIndexOf('\n', hit.at - 1) + 1;
+  for (let lines = 0; lines < 8; lines++) {
+    const find = text.slice(start, declEnd);
+    if (text.split(find).length - 1 === 1) {
+      const decl = text.slice(hit.at, declEnd);
+      return { find, replace: find.replace(decl, decl.replace(value, '{{value}}')) };
+    }
+    if (start === 0) break;
+    start = text.lastIndexOf('\n', start - 2) + 1;
+  }
+  return null;
+}
+
+async function fileText(p) {
+  if (!(p in S.fileTexts)) S.fileTexts[p] = await (await fetch(`${BASE}/site/${p.split('/').map(encodeURIComponent).join('/')}`)).text();
+  return S.fileTexts[p];
+}
+
+/** The pending declaration edits with their code wires, for /api/save. */
+async function pendingEdits() {
+  const edits = [];
+  for (const { control: c, value } of S.editorChanges.values()) {
+    let source = null;
+    if (c.file) {
+      try {
+        const wire = findSnippet(await fileText(c.file), c.selector, c.prop, c.value);
+        if (wire) source = { file: c.file, ...wire };
+      } catch {}
+    }
+    edits.push({ id: c.id, label: `${c.selector || 'inline'} ${c.prop}`, type: c.type, from: c.value, to: value, source });
+  }
+  return edits;
+}
+
+function renderEditorView() {
+  const inspector = $('#inspector');
+  const parts = [];
+  if (S.el) parts.push(renderElementSection());
+  const doc = frame.contentDocument;
+  let el = null;
+  try {
+    el = S.el && doc ? doc.querySelector(S.el.selector) : null;
+  } catch {}
+  if (!el) {
+    parts.push(h('div', { class: 'section' }, h('h2', {}, 'Styles'), h('p', { class: 'empty-inspector' }, S.el ? 'The picked element is not on the page right now.' : 'Pick an element on the page (V) to edit its styles. Changes preview live and are written to the stylesheet on Save.')));
+    inspector.replaceChildren(...parts);
+    return;
+  }
+  const schema = editorSchemaFor(el);
+  for (const g of schema.groups) {
+    parts.push(
+      h(
+        'div',
+        { class: 'section props' },
+        h('h2', {}, g.label),
+        h(
+          'div',
+          { class: 'rows' },
+          g.controls.map((c) => {
+            const value = editorValue(c);
+            return h(
+              'div',
+              { class: `prop${S.editorChanges.has(c.id) ? ' changed' : ''}${c.type === 'text' || c.type === 'tokens' ? ' wide' : ''}`, 'data-id': c.id },
+              h('span', { class: 'name', title: `${c.prop} ← ${c.selector || 'inline style'}` }, c.prop),
+              controlEditor(c, value, (v) => setEditorValue(c, v)),
+              h('span', { class: 'key dot', title: S.editorChanges.has(c.id) ? 'Changed since the last save' : 'Unchanged' }),
+              h('span', { class: 'wire' }, `${c.selector || 'inline'}${c.sourceHint ? ` → ${c.sourceHint}` : c.file ? '' : ' · no source file'}`),
+            );
+          }),
+        ),
+      ),
+    );
+  }
+  inspector.replaceChildren(...parts);
+}
+
+function setView(view) {
+  S.mode2 = view;
+  if (!S.schema) $('#timeline').hidden = view === 'editor';
+  for (const b of $('#view').children) b.classList.toggle('on', b.dataset.view === view);
+  renderAll();
 }
 
 function previewAnimations() {
@@ -420,7 +728,7 @@ function change(fn, { render = 'all' } = {}) {
 }
 
 function afterChange(render = 'all') {
-  S.dirty = snapshot() !== S.saved;
+  S.dirty = snapshot() !== S.saved || S.editorChanges.size > 0;
   if (render === 'all') renderAll();
   else {
     renderTimeline();
@@ -630,10 +938,24 @@ async function saveNow() {
   if (S.schema) return saveSchema();
   const selOffset = S.sel ? anim().keyframes[S.sel.bi].offsets[S.sel.oi] : null;
   try {
-    const r = await api('POST', '/api/save', { model: S.model });
+    const edits = await pendingEdits();
+    const r = await api('POST', '/api/save', { model: S.model, edits });
     S.model = r.model;
     S.saved = snapshot();
     S.dirty = false;
+    if (edits.length) {
+      S.editorChanges = new Map();
+      S.fileTexts = {};
+      const manual = r.manual?.length ? ` · ${r.manual.length} could not be placed (handed to the agent)` : '';
+      toast(`Saved – ${r.applied?.length || 0} style edit${r.applied?.length === 1 ? '' : 's'} written${manual}`);
+      if ((r.files || []).some((f) => f !== S.session.file)) loadPreview(); // other stylesheets changed: reload them
+      else {
+        frame.contentDocument?.getElementById('anni-editor')?.remove();
+        await pushNow(); // the edited stylesheet is swapped in before the panel re-reads the CSSOM
+      }
+      renderAll();
+      return;
+    }
     S.sel = null;
     if (selOffset !== null) {
       const bi = anim().keyframes.findIndex((b) => b.offsets.includes(selOffset));
@@ -659,9 +981,11 @@ function renderAll() {
 function renderHeader() {
   const sel = $('#anim-select');
   sel.replaceChildren(...S.model.animations.map((a) => h('option', { value: a.name, selected: a.name === S.name }, `@keyframes ${a.name}`)));
+  for (const b of $('#view').children) b.classList.toggle('on', b.dataset.view === S.mode2);
   $('#dirty').hidden = !S.dirty;
-  $('#undo').disabled = !S.history.length;
-  $('#redo').disabled = !S.future.length;
+  const editing = S.mode2 === 'editor';
+  $('#undo').disabled = editing ? !S.ehistory.length : !S.history.length;
+  $('#redo').disabled = editing ? !S.efuture.length : !S.future.length;
   document.title = `${S.dirty ? '● ' : ''}${S.name} · anni`;
 }
 
@@ -698,6 +1022,7 @@ function overlay() {
   if (!ov) {
     const style = doc.createElement('style');
     style.textContent = OVERLAY_CSS;
+    style.dataset.anniOverlay = '';
     doc.head.append(style);
     ov = doc.createElement('div');
     ov.id = 'anni-ov';
@@ -948,6 +1273,7 @@ function curveSvg(easing) {
 }
 
 function renderInspector() {
+  if (S.mode2 === 'editor') return renderEditorView();
   const a = anim();
   const t = a.timing;
   const inspector = $('#inspector');
@@ -1678,8 +2004,9 @@ $('#rewind').onclick = () => {
 $('#loop').onchange = (e) => (S.loop = e.target.checked);
 $('#speed').onchange = (e) => (S.speed = +e.target.value);
 $('#save').onclick = saveNow;
-$('#undo').onclick = () => (S.schema ? undoValues() : undo());
-$('#redo').onclick = () => (S.schema ? redoValues() : redo());
+$('#undo').onclick = () => (S.schema ? undoValues() : S.mode2 === 'editor' ? undoEditor() : undo());
+$('#redo').onclick = () => (S.schema ? redoValues() : S.mode2 === 'editor' ? redoEditor() : redo());
+$('#view').onclick = (e) => e.target.dataset.view && setView(e.target.dataset.view);
 $('#add-kf').onclick = () => addKeyframe(playheadPct());
 $('#mode').onclick = (e) => e.target.dataset.mode && setMode(e.target.dataset.mode);
 $('#pick').onclick = () => setPicking(!S.picking);
@@ -1700,13 +2027,18 @@ addEventListener('keydown', (e) => {
     }
     return;
   }
+  const editing = S.mode2 === 'editor';
   if (mod && e.key.toLowerCase() === 'z' && !typing) {
     e.preventDefault();
-    return e.shiftKey ? redo() : undo();
+    return e.shiftKey ? (editing ? redoEditor() : redo()) : editing ? undoEditor() : undo();
   }
   if (mod && e.key.toLowerCase() === 'y' && !typing) {
     e.preventDefault();
-    return redo();
+    return editing ? redoEditor() : redo();
+  }
+  if (!typing && !mod && e.key === 'Tab') {
+    e.preventDefault();
+    return setView(editing ? 'animate' : 'editor');
   }
   if (typing) return;
   if (e.key === ' ') {

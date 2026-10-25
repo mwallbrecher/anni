@@ -46,7 +46,10 @@ HTML page and the stylesheets/scripts it links), opens the browser tab, and when
 edited file back to disk and hands the model a short diff. File contents never travel through the model's
 context, so a whole editing session costs a few hundred tokens, and every drag in between costs none.
 Tools: `open_animation(file, animation?, preview?, extra_files?, session?)`, `wait_for_save(session?)`,
-`get_animation_state(session?)`, `list_animations(file)`. `ANNI_URL` points it at a self-hosted instance.
+`get_animation_state(session?)`, `list_animations(file)`, plus `present` / `wait_for_changes` (below) and
+`snapshot_page(url)`, which fetches a route of a *running* app – dev server, staging, anything – into static files
+(page, stylesheets, fonts, images; scripts stripped) so the preview is the real page. `ANNI_URL` points the sidecar at a
+self-hosted instance.
 
 **Zero-install – the remote MCP endpoint** (Streamable HTTP), for clients that can't run a local process:
 
@@ -111,6 +114,7 @@ Everything is one Durable Object per session (files, live model, open tabs, wait
 
 - **Preview**: for a `.css` file anni looks for an `.html` next to it that links it (or pass `preview`). If the animation doesn't run there (e.g. only on `:hover`), there's a **demo box**.
 - **Pick element** (`V`): click an element right in the preview, like in Figma or Rive. anni jumps to its animation, or creates a new `@keyframes` plus `animation` rule for the chosen selector with `+ Animation` (class, id or path selectable; an existing rule is extended, never overwritten).
+- **Editor | Animate** (`Tab`): two views over the same page, Rive-style. *Animate* is the timeline. *Editor* shows the picked element's **winning CSS declarations** – read from the browser's CSSOM, so they're the truth, in their authored shorthand form (`padding: 8px 16px`) – as controls, grouped Layout / Typography / Appearance / Transform, each labelled with the rule and file it comes from. Edits preview live; on Save anni rewrites that declaration in the uploaded stylesheet (a unique snippet is located around it, nothing else is touched) and the sidecar writes the file back. Declarations anni can't place are handed to the agent.
 - **Properties** (Figma-style panel): always shows the common properties (`scale`, `rotate`, `translate`, `transform`, `opacity`, `filter`, colors, sizes) with their value **at the playhead** – keyed, interpolated, or the element's base value. Changing a value keys it at the playhead automatically. The diamond after each value shows its state: filled = set in the keyframe at the playhead (row highlighted), outline = animated but interpolated here, grey = not animated; click it to key/unkey. Editors fit the value: sliders for `opacity`/`scale`, number + unit for lengths and angles, color picker + alpha, and a function list for `transform`/`filter` (`translateY`, `scale`, `rotate`, `blur`, …). Click a property name to edit it as text; type any other property into the field at the bottom.
 - **Timeline**: one scene on the page's clock. Every animated element in the preview is a group (bar = delay + duration, hatched = further iterations) with its keyframes; expand it for one track per property. The playhead pauses and drives **every** CSS animation on the page – nothing keeps running on the side. Clicking a group selects its animation and element; animations from other files show greyed out. Drag diamonds to move them (Shift = 0.1 %), double-click a track for a new keyframe, click the ruler to scrub.
 - **Inspector**: duration, delay, easing (with curve), iterations, direction, fill mode.
