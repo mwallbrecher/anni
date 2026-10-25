@@ -148,7 +148,10 @@ code { font-family: var(--mono); background: var(--panel-2); padding: 1px 5px; b
 .seg button.on { background: var(--line-2); color: var(--bright); }
 .seg button:disabled { display: none; }
 #pick.on { background: var(--accent-soft); color: var(--accent); }
+.readout { font-family: var(--mono); font-size: 11px; color: var(--accent); background: var(--accent-soft); height: 20px; padding: 0 8px; white-space: nowrap; }
+.readout:hover { background: var(--accent); color: #fff; }
 .frame-wrap {
+  position: relative;
   margin: 0 12px 12px;
   border-radius: var(--radius);
   overflow: hidden;
@@ -287,7 +290,7 @@ iframe { width: 100%; height: 100%; border: 0; display: block; }
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.tl-track { position: relative; cursor: crosshair; }
+.tl-track { position: relative; cursor: crosshair; overflow: hidden; }
 .lane { position: absolute; inset: 0 var(--lane-pad); }
 
 /* element groups (layers) */

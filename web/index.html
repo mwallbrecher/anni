@@ -30,6 +30,8 @@
         </div>
         <button id="pick" title="Pick an element on the page (V, Esc cancels)">⌖ Pick element</button>
         <span class="muted" id="stage-info"></span>
+        <span class="spacer"></span>
+        <button id="zoom" class="readout" title="Pinch or ⌘/Ctrl + wheel to zoom, wheel to pan · click or press 0 to reset" hidden>100%</button>
       </div>
       <div class="frame-wrap"><iframe id="frame" title="Preview"></iframe></div>
     </section>
@@ -50,7 +52,8 @@
         <option value="2">2×</option>
       </select>
       <div class="spacer"></div>
-      <span class="muted hint">The playhead drives every animation on the page · double-click a track = keyframe · drag = move · Shift = 0.1 %</span>
+      <button id="tl-zoom" class="readout" title="Timeline zoom: pinch or ⌘/Ctrl + wheel, Shift + wheel pans · click or press 0 to fit" hidden>1.0× · fit</button>
+      <span class="muted hint">The playhead drives every animation on the page · double-click a track = keyframe · drag = move · Shift+←/→ = next keyframe · pinch = zoom</span>
       <button id="add-kf">+ Keyframe at playhead</button>
     </div>
     <div class="tracks" id="tracks"></div>

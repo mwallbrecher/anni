@@ -38,9 +38,12 @@ const S = {
   picking: false, // pick mode: hovering/clicking elements in the page preview
   hoverEl: null,
   el: null, // picked element: { selector, candidates, tag, names }
+  view: { span: null, start: 0 }, // visible window of the timeline (ms); span null = whole scene
+  zoom: { z: 1, x: 0, y: 0 }, // visual zoom of the preview: scale + translation in px
 };
 
 const NEW_TIMING = { duration: 1000, delay: 0, easing: 'ease', iterations: '1', direction: 'normal', fill: 'both' };
+const FRAME = 1000 / 60;
 
 const EASINGS = ['linear', 'ease', 'ease-in', 'ease-out', 'ease-in-out', 'cubic-bezier(0.34, 1.56, 0.64, 1)', 'cubic-bezier(0.65, 0, 0.35, 1)', 'steps(4, end)'];
 const BEZIER = { linear: [0, 0, 1, 1], ease: [0.25, 0.1, 0.25, 1], 'ease-in': [0.42, 0, 1, 1], 'ease-out': [0, 0, 0.58, 1], 'ease-in-out': [0.42, 0, 0.58, 1] };
@@ -490,11 +493,12 @@ function renderStageBar() {
 const OVERLAY_CSS = `
 #anni-ov, #anni-ov * { pointer-events: none !important; }
 #anni-ov { position: fixed; inset: 0; z-index: 2147483647; }
-#anni-ov .box { position: absolute; box-sizing: border-box; border: 1px dashed #3d9bff; }
-#anni-ov .box.sel { border-style: solid; box-shadow: 0 0 0 1px rgba(61, 155, 255, 0.3); }
+#anni-ov .box { position: absolute; box-sizing: border-box; border: calc(1px / var(--anni-z, 1)) dashed #3d9bff; }
+#anni-ov .box.sel { border-style: solid; box-shadow: 0 0 0 calc(1px / var(--anni-z, 1)) rgba(61, 155, 255, 0.3); }
 #anni-ov .box.hover { border-style: solid; background: rgba(61, 155, 255, 0.1); }
-#anni-ov .tag { position: absolute; left: -1px; bottom: 100%; margin-bottom: 2px; padding: 1px 5px; border-radius: 2px;
-  background: #3d9bff; color: #fff; font: 500 10px/1.5 Inter, system-ui, sans-serif; white-space: nowrap; }
+#anni-ov .tag { position: absolute; left: 0; bottom: 100%; margin-bottom: 2px; padding: 1px 5px; border-radius: 2px;
+  background: #3d9bff; color: #fff; font: 500 10px/1.5 Inter, system-ui, sans-serif; white-space: nowrap;
+  transform: scale(calc(1 / var(--anni-z, 1))); transform-origin: 0 100%; }
 html.anni-pick, html.anni-pick * { cursor: crosshair !important; }`;
 
 /** Overlay layer inside the preview document, installed once per page load. */
@@ -524,11 +528,46 @@ function overlay() {
       true,
     );
     doc.addEventListener('keydown', (e) => e.key === 'Escape' && setPicking(false));
+    doc.addEventListener('wheel', onPreviewWheel, { passive: false, capture: true });
     doc.documentElement.classList.toggle('anni-pick', S.picking);
     drawOverlay.key = '';
   }
   return ov;
 }
+
+/* ---------- preview zoom (visual, like zooming the composition view) ---------- */
+
+function applyZoom() {
+  const { z, x, y } = S.zoom;
+  frame.style.transformOrigin = '0 0';
+  frame.style.transform = z === 1 && !x && !y ? '' : `translate(${x}px, ${y}px) scale(${z})`;
+  frame.contentDocument?.documentElement.style.setProperty('--anni-z', z); // overlay outlines stay 1px on screen
+  const btn = $('#zoom');
+  btn.hidden = z === 1;
+  btn.textContent = `${Math.round(z * 100)}%`;
+}
+function resetZoom() {
+  S.zoom = { z: 1, x: 0, y: 0 };
+  applyZoom();
+}
+/** Pinch / ⌘-or-Ctrl + wheel zooms around the cursor; once zoomed, a plain wheel pans instead of scrolling the page. */
+function onPreviewWheel(e) {
+  const { z, x, y } = S.zoom;
+  if (e.ctrlKey || e.metaKey) {
+    e.preventDefault();
+    const nz = clamp(z * Math.exp(-e.deltaY * (e.ctrlKey && !e.metaKey ? 0.01 : 0.002)), 0.25, 8);
+    // Cursor in frame-wrap pixels: iframe point p maps to x + p * z.
+    const cx = x + e.clientX * z;
+    const cy = y + e.clientY * z;
+    S.zoom = Math.abs(nz - 1) < 0.02 ? { z: 1, x: 0, y: 0 } : { z: nz, x: cx - (cx - x) * (nz / z), y: cy - (cy - y) * (nz / z) };
+    applyZoom();
+  } else if (z !== 1) {
+    e.preventDefault();
+    S.zoom = { z, x: x - e.deltaX, y: y - e.deltaY };
+    applyZoom();
+  }
+}
+$('#zoom').onclick = resetZoom;
 
 function pickTarget(e) {
   const doc = frame.contentDocument;
@@ -1157,12 +1196,65 @@ function sceneGroups() {
 const groupsKey = (groups) => groups.map((g) => `${g.key}:${g.targets.length}:${g.duration}`).join();
 const sceneDur = () => S.sceneDur || 1;
 const sceneEnd = (g) => g.delay + g.duration * (Number.isFinite(g.iterations) && g.iterations > 0 ? g.iterations : 1);
-/** Keyframe offset of group `g` -> position on the scene lane (%) and back. */
-const sceneX = (g, o) => ((g.delay + (o / 100) * g.duration) / sceneDur()) * 100;
+
+/* The timeline shows a window [viewStart, viewStart + viewSpan] of the scene; span null = whole scene. */
+const MIN_SPAN = 4 * FRAME;
+const viewSpan = () => Math.min(S.view.span ?? sceneDur(), sceneDur());
+const viewStart = () => (S.view.span == null ? 0 : clamp(S.view.start, 0, sceneDur() - viewSpan()));
+const zoomFactor = () => sceneDur() / viewSpan();
+/** Page time -> lane position (%) and back. */
+const timeX = (t) => ((t - viewStart()) / viewSpan()) * 100;
+const xTime = (x) => viewStart() + (x / 100) * viewSpan();
+/** Keyframe offset of group `g` -> lane position (%) and back. */
+const sceneX = (g, o) => timeX(g.delay + (o / 100) * g.duration);
 const toOffset = (g, x, fine) => {
-  const o = clamp((((x / 100) * sceneDur() - g.delay) / Math.max(1, g.duration)) * 100, 0, 100);
+  const o = clamp(((xTime(x) - g.delay) / Math.max(1, g.duration)) * 100, 0, 100);
   return fine ? Math.round(o * 10) / 10 : Math.round(o);
 };
+
+/** Zooms the window by `factor` around page time `t` (zooming out past the scene fits it). */
+function zoomTimeline(factor, t) {
+  const span = clamp(viewSpan() / factor, MIN_SPAN, sceneDur());
+  if (span >= sceneDur()) return resetTimelineView();
+  S.view = { span, start: clamp(t - (t - viewStart()) / factor, 0, sceneDur() - span) };
+  renderTimeline();
+}
+function panTimeline(dt) {
+  if (S.view.span == null) return;
+  S.view.start = clamp(viewStart() + dt, 0, sceneDur() - viewSpan());
+  renderTimeline();
+}
+function resetTimelineView() {
+  if (S.view.span == null) return;
+  S.view = { span: null, start: 0 };
+  renderTimeline();
+}
+/** Pans the window so the playhead stays in view (arrow keys, keyframe jumps). */
+function ensurePlayheadVisible() {
+  if (S.view.span == null) return;
+  const start = viewStart();
+  const span = viewSpan();
+  if (S.t < start) panTimeline(S.t - start);
+  else if (S.t > start + span) panTimeline(S.t - (start + span));
+}
+
+/** Pinch / ⌘-or-Ctrl + wheel zooms around the cursor, Shift + wheel (or a horizontal wheel) pans. Plain wheel scrolls rows. */
+function onTimelineWheel(e) {
+  const lane = e.target.closest('.tl-track')?.querySelector('.lane') || $('#tracks .lane');
+  if (!lane) return;
+  const rect = lane.getBoundingClientRect();
+  if (e.ctrlKey || e.metaKey) {
+    e.preventDefault();
+    const frac = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+    zoomTimeline(Math.exp(-e.deltaY * (e.ctrlKey && !e.metaKey ? 0.01 : 0.002)), xTime(frac * 100));
+  } else if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+    if (S.view.span == null) return;
+    e.preventDefault();
+    panTimeline(((e.deltaX || e.deltaY) / rect.width) * viewSpan());
+  }
+}
+$('#tracks').addEventListener('wheel', onTimelineWheel, { passive: false });
+$('#tl-zoom').onclick = resetTimelineView;
 
 /** Re-renders the timeline when the set of animated elements on the page changed (e.g. started by script). */
 function refreshGroups() {
@@ -1201,7 +1293,7 @@ function startScrub(e, lane) {
   if (e.button !== 0) return;
   const rect = lane.getBoundingClientRect();
   const move = (ev) => {
-    S.t = (laneX(ev, rect, true) / 100) * sceneDur();
+    S.t = xTime(laneX(ev, rect, true));
     updatePlayhead();
   };
   move(e);
@@ -1284,11 +1376,12 @@ const folded = new Map(); // group key -> user's expand/collapse choice
 /** Header row of a group: element name, span bar of the animation, all its keyframes. */
 function groupRow(g, open) {
   const D = sceneDur();
-  const span = [h('div', { class: 'span', style: `left:${(g.delay / D) * 100}%;width:${(g.duration / D) * 100}%` }, h('span', {}, `${g.name} · ${fmtMs(g.duration)}`))];
+  const pct = (ms) => (ms / viewSpan()) * 100;
+  const span = [h('div', { class: 'span', style: `left:${timeX(g.delay)}%;width:${pct(g.duration)}%` }, h('span', {}, `${g.name} · ${fmtMs(g.duration)}`))];
   const end = sceneEnd(g);
   if (end > g.delay + g.duration + 1 || !Number.isFinite(g.iterations)) {
     const to = Number.isFinite(g.iterations) ? Math.min(end, D) : D;
-    span.push(h('div', { class: 'span more', style: `left:${((g.delay + g.duration) / D) * 100}%;width:${((to - g.delay - g.duration) / D) * 100}%`, title: Number.isFinite(g.iterations) ? `${g.iterations}×` : 'infinite' }));
+    span.push(h('div', { class: 'span more', style: `left:${timeX(g.delay + g.duration)}%;width:${pct(to - g.delay - g.duration)}%`, title: Number.isFinite(g.iterations) ? `${g.iterations}×` : 'infinite' }));
   }
   const kfs = g.anim
     ? keyframeButtons(g, null)
@@ -1308,10 +1401,16 @@ function renderTimeline() {
   S.groups = groups;
   S.groupsKey = groupsKey(groups);
   const D = (S.sceneDur = Math.max(1, ...groups.map(sceneEnd)));
-  const step = niceStep(D);
+  const start = viewStart();
+  const span = viewSpan();
+  const step = niceStep(span);
   const ruler = h('div', { class: 'lane' });
-  for (let t = 0; t < D - step * 0.4; t += step) ruler.append(h('div', { class: 'tick', style: `left:${(t / D) * 100}%` }, h('span', {}, fmtMs(t))));
-  ruler.append(h('div', { class: 'tick end', style: 'left:100%' }, h('span', {}, fmtMs(D))));
+  for (let t = Math.ceil(start / step) * step; t < start + span - step * 0.9; t += step) ruler.append(h('div', { class: 'tick', style: `left:${timeX(t)}%` }, h('span', {}, fmtMs(t))));
+  ruler.append(h('div', { class: 'tick end', style: 'left:100%' }, h('span', {}, fmtMs(start + span))));
+  const z = zoomFactor();
+  const zoomBtn = $('#tl-zoom');
+  zoomBtn.hidden = z < 1.01;
+  zoomBtn.textContent = `${z < 10 ? z.toFixed(1) : Math.round(z)}× · fit`;
   const n = groups.filter((g) => g.targets.length).length;
   const rulerRow = h('div', { class: 'tl-row ruler' }, h('div', { class: 'tl-label' }, n ? `${n} element${n > 1 ? 's' : ''}` : 'No elements'), h('div', { class: 'tl-track', onpointerdown: (e) => startScrub(e, ruler) }, ruler));
 
@@ -1330,9 +1429,12 @@ function renderTimeline() {
 
 function updatePlayhead() {
   if (!S.model) return;
-  const p = (S.t / sceneDur()) * 100;
+  const p = timeX(S.t);
   const ph = $('#playhead');
-  if (ph) ph.style.left = `${p}%`;
+  if (ph) {
+    ph.style.left = `${p}%`;
+    ph.hidden = p < -0.5 || p > 100.5;
+  }
   $('#time').innerHTML = `<b>${Math.round(S.t)}ms</b> / ${Math.round(sceneDur())}ms`;
   schedulePanel();
 }
@@ -1413,20 +1515,64 @@ addEventListener('keydown', (e) => {
   if (typing) return;
   if (e.key === ' ') {
     e.preventDefault();
+    if (e.target instanceof HTMLButtonElement) e.target.blur(); // Space must not also re-trigger a focused button
     togglePlay();
   } else if ((e.key === 'Delete' || e.key === 'Backspace') && S.sel) {
     deleteSelected();
   } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-    const step = (e.shiftKey ? 10 : 1) * (e.key === 'ArrowLeft' ? -1 : 1);
-    S.t = clamp(S.t + (step / 100) * sceneDur(), 0, sceneDur());
+    e.preventDefault();
+    const dir = e.key === 'ArrowLeft' ? -1 : 1;
+    if (e.shiftKey) jumpToKeyframe(dir);
+    else {
+      S.playing = false;
+      updatePlayButton();
+      S.t = clamp(S.t + dir * arrowStep(), 0, sceneDur());
+      ensurePlayheadVisible();
+      updatePlayhead();
+    }
+  } else if (e.key === 'Home' || e.key === 'End') {
+    S.t = e.key === 'Home' ? 0 : sceneDur();
+    ensurePlayheadVisible();
     updatePlayhead();
   } else if (e.key === 'Escape') {
     if (S.picking) setPicking(false);
     else select(null);
   } else if (e.key.toLowerCase() === 'v' && !mod) {
     setPicking(!S.picking);
+  } else if (e.key === '0' && !mod) {
+    resetTimelineView();
+    resetZoom();
   }
 });
+
+/** Arrow step: 1 % of the visible window, in whole frames – one frame when zoomed in, bigger steps zoomed out. */
+const arrowStep = () => Math.max(1, Math.round(viewSpan() / 100 / FRAME)) * FRAME;
+
+/** Every keyframe of the scene as page time, with what it belongs to. */
+function keyframeTimes() {
+  const out = [];
+  for (const g of S.groups || []) {
+    if (g.anim) g.anim.keyframes.forEach((b, bi) => b.offsets.forEach((o, oi) => out.push({ t: g.delay + (o / 100) * g.duration, g, bi, oi })));
+    else for (const o of g.keyframes) out.push({ t: g.delay + (o / 100) * g.duration, g });
+  }
+  return out.sort((a, b) => a.t - b.t);
+}
+
+/** Shift+arrow: playhead to the next/previous keyframe of any element; selects it if it belongs to the edited animation. */
+function jumpToKeyframe(dir) {
+  const times = keyframeTimes();
+  const hit = dir > 0 ? times.find((k) => k.t > S.t + 0.5) : [...times].reverse().find((k) => k.t < S.t - 0.5);
+  if (!hit) return;
+  S.playing = false;
+  updatePlayButton();
+  S.t = hit.t;
+  ensurePlayheadVisible();
+  if (hit.g.anim && hit.g.name === S.name) select(hit.bi, hit.oi, { seek: false });
+  else {
+    renderTimeline();
+    updatePlayhead();
+  }
+}
 
 addEventListener('beforeunload', (e) => {
   if (S.dirty) e.preventDefault();
