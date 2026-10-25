@@ -23,10 +23,20 @@ function locate(url, env) {
   return null;
 }
 
+/** With ANNI_TOKEN set (wrangler secret), agents must send it as a bearer token; session pages stay link-capability. */
+function authorized(request, env) {
+  if (!env.ANNI_TOKEN) return true;
+  const h = request.headers.get('authorization') || '';
+  return h === `Bearer ${env.ANNI_TOKEN}`;
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const loc = locate(url, env);
+    if ((url.pathname === '/mcp' || url.pathname.startsWith('/api/sessions')) && !authorized(request, env)) {
+      return json({ error: 'This anni instance requires a token (Authorization: Bearer …)' }, 401);
+    }
     if (loc) {
       if (loc.base && !loc.rest) return Response.redirect(`${url.origin}${loc.base}/`, 302); // relative assets need the trailing slash
       // The DO sees the session as its own root; `x-anni-base` lets it build URLs in path mode.
@@ -59,7 +69,7 @@ export default {
       }
     }
     if (url.pathname === '/api/ping') return json({ app: 'anni', hosted: true });
-    if (url.pathname === '/api/session') return json({ session: null, hosted: true, mcpUrl: `${url.origin}/mcp` });
+    if (url.pathname === '/api/session') return json({ session: null, hosted: true, mcpUrl: `${url.origin}/mcp`, ttlDays: 7, tokenRequired: !!env.ANNI_TOKEN });
     if (url.pathname === '/api/events') return new Response('retry: 3600000\n\n', { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' } }); // nothing to push at the root
     if (url.pathname.startsWith('/api/')) return json({ error: 'No session in this URL' }, 404);
     return env.ASSETS.fetch(request);

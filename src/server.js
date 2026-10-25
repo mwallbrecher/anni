@@ -155,7 +155,7 @@ ${styles}
 <style>
 html, body { margin: 0 !important; height: 100% !important; }
 body { display: grid !important; place-items: center !important; background: transparent !important; overflow: hidden; }
-#anni-demo { width: 96px; height: 96px; border-radius: 18px; background: #3d9bff; color: #fff;
+#anni-demo { width: 96px; height: 96px; border-radius: 18px; background: #e97130; color: #fafaf9;
   display: grid; place-items: center; font: 600 28px/1 system-ui, sans-serif; }
 </style></head><body><div id="anni-demo">Aa</div></body></html>`;
 }

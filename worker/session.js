@@ -28,10 +28,15 @@ const MIME = {
 };
 const MAX_FILE = 1.5 * 1024 * 1024; // per uploaded file (storage values are capped at 2 MB)
 const MAX_TOTAL = 24 * 1024 * 1024;
-const EDITOR_ASSETS = new Set(['/', '/index.html', '/app.js', '/props.js', '/style.css']);
+const MAX_FILES = 300;
+const MAX_CONTROLS = 400;
+const TTL_MS = 7 * 24 * 60 * 60 * 1000; // a session is wiped after a week without activity
+const EDITOR_ASSETS = new Set(['/', '/index.html', '/app.js', '/props.js', '/aurora.js', '/style.css']);
+const isEditorAsset = (p) => EDITOR_ASSETS.has(p) || p.startsWith('/brand/') || p.startsWith('/fonts/');
 
-const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
-const text = (body, type, status = 200) => new Response(body, { status, headers: { 'Content-Type': type, 'Cache-Control': 'no-store' } });
+const NOINDEX = { 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow' };
+const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...NOINDEX } });
+const text = (body, type, status = 200) => new Response(body, { status, headers: { 'Content-Type': type, ...NOINDEX } });
 const ext = (p) => (p.match(/\.[a-z0-9]+$/i) || [''])[0].toLowerCase();
 
 export class AnniSession {
@@ -82,7 +87,28 @@ export class AnniSession {
     }
   }
 
+  /** Expiry: every open/save pushes the alarm out; when it fires the session is deleted entirely. */
+  async touch() {
+    await this.ctx.storage.setAlarm(Date.now() + TTL_MS);
+  }
+
+  async alarm() {
+    for (const c of this.streams) {
+      try {
+        c.close();
+      } catch {}
+    }
+    this.streams.clear();
+    for (const w of this.waiters) w.resolve(false);
+    this.waiters.clear();
+    this.meta = null;
+    this.files = {};
+    this.live = null;
+    await this.ctx.storage.deleteAll();
+  }
+
   async persist() {
+    await this.touch();
     const old = (await this.ctx.storage.get('files:index')) || [];
     const paths = Object.keys(this.files);
     const gone = old.filter((p) => !(p in this.files)).map((p) => `file:${p}`);
@@ -95,10 +121,13 @@ export class AnniSession {
 
   /** Normalises uploaded files: text stays text, base64 uploads become { b64 }; oversize files are skipped and reported. */
   static intake(files) {
+    if (files.length > MAX_FILES) throw new Error(`Too many files (${files.length}; the limit is ${MAX_FILES})`);
     const map = {};
     const skipped = [];
     let total = 0;
     for (const f of files) {
+      if (typeof f?.path !== 'string' || typeof f?.content !== 'string') throw new Error('each file needs a string path and content');
+      if (f.path.includes('..')) throw new Error(`invalid path "${f.path}"`);
       const p = f.path.replace(/^\.?\//, '');
       const size = f.encoding === 'base64' ? Math.floor((f.content.length * 3) / 4) : f.content.length;
       if (size > MAX_FILE || total + size > MAX_TOTAL) {
@@ -169,7 +198,7 @@ ${styles}
 <style>
 html, body { margin: 0 !important; height: 100% !important; }
 body { display: grid !important; place-items: center !important; background: transparent !important; overflow: hidden; }
-#anni-demo { width: 96px; height: 96px; border-radius: 18px; background: #3d9bff; color: #fff;
+#anni-demo { width: 96px; height: 96px; border-radius: 18px; background: #e97130; color: #fafaf9;
   display: grid; place-items: center; font: 600 28px/1 system-ui, sans-serif; }
 </style></head><body><div id="anni-demo">Aa</div></body></html>`;
   }
@@ -203,6 +232,7 @@ body { display: grid !important; place-items: center !important; background: tra
   /** A schema session: the agent describes controls (with preview and code wires); anni renders them. */
   async openSchema({ map, preview, schema, title }) {
     if (!schema || !Array.isArray(schema.groups) || !schema.groups.length) throw new Error('schema.groups must be a non-empty array');
+    if (schema.groups.reduce((n, g) => n + (g.controls?.length || 0), 0) > MAX_CONTROLS) throw new Error(`Too many controls (the limit is ${MAX_CONTROLS})`);
     const ids = new Set();
     for (const g of schema.groups) {
       if (!Array.isArray(g.controls)) throw new Error(`group "${g.label}" has no controls[]`);
@@ -384,8 +414,11 @@ body { display: grid !important; place-items: center !important; background: tra
         }
         return text(body, MIME[ext(p)] || 'application/octet-stream');
       }
-      if (EDITOR_ASSETS.has(url.pathname)) {
-        return this.env.ASSETS.fetch(new Request(new URL(url.pathname === '/' ? '/index.html' : url.pathname, 'https://assets.invalid'), { headers: request.headers }));
+      if (isEditorAsset(url.pathname)) {
+        const res = await this.env.ASSETS.fetch(new Request(new URL(url.pathname === '/' ? '/index.html' : url.pathname, 'https://assets.invalid'), { headers: request.headers }));
+        const headers = new Headers(res.headers);
+        headers.set('X-Robots-Tag', 'noindex, nofollow');
+        return new Response(res.body, { status: res.status, headers });
       }
       return text('Not found', 'text/plain', 404);
     } catch (e) {

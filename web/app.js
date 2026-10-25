@@ -2,6 +2,7 @@
 // iframe (same origin), and drives the selected CSS animation with a paused Web Animation.
 
 import { FNS, KNOWN, LENGTH, defaultOf, fmtColor, fmtFns, fmtNum, fmtTokens, parseFns, parseNum, parseTokens, rangeFor, specOf, splitTop, toHex, toRgba } from './props.js';
+import { startAurora, stopAurora } from './aurora.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -90,6 +91,7 @@ function banner(content) {
 async function load({ keepTime = false } = {}) {
   const data = await api('GET', '/api/session');
   S.session = data.session;
+  S.hosted = !!data.hosted;
   const has = !!S.session;
   $('#empty').hidden = has;
   for (const id of ['#workspace', '#timeline']) $(id).hidden = !has;
@@ -97,9 +99,11 @@ async function load({ keepTime = false } = {}) {
   if (!has) {
     $('#file').textContent = '';
     $('#dirty').hidden = true;
-    if (data.hosted) renderConnectCard(data.mcpUrl);
+    if (data.hosted) renderConnectCard(data.mcpUrl, data);
+    startAurora($('#empty'));
     return;
   }
+  stopAurora();
   if (S.session.kind === 'schema') return loadSchema(data);
   S.schema = null;
   S.editorChanges = new Map();
@@ -130,16 +134,26 @@ async function load({ keepTime = false } = {}) {
 }
 
 /** Root of a hosted anni: nothing to edit here, show how an agent connects. */
-function renderConnectCard(mcpUrl) {
-  const cmd = `claude mcp add --transport http anni ${mcpUrl}`;
-  const codex = `[mcp_servers.anni]\nurl = "${mcpUrl}"`;
+function renderConnectCard(mcpUrl, { ttlDays = 7, tokenRequired = false } = {}) {
+  const sidecar = 'claude mcp add anni -- npx -y anni-mcp';
+  const http = `claude mcp add --transport http anni ${mcpUrl}`;
+  const codex = `[mcp_servers.anni]\ncommand = "npx"\nargs = ["-y", "anni-mcp"]`;
+  const copy = (s) => () => navigator.clipboard.writeText(s).then(() => toast('Copied'));
   $('.empty-card').replaceChildren(
-    h('span', { class: 'logo big' }),
+    h('img', { class: 'logo big', src: 'brand/anni-logo.png', alt: 'anni' }),
     h('h1', {}, 'Connect your agent to anni'),
-    h('p', {}, 'anni is a timeline editor for the CSS animations in your project. Your agent opens one here, you tune it, and the agent writes it back to your files.'),
-    h('p', { class: 'cmd' }, h('span', { class: 'muted' }, 'Claude Code'), h('code', {}, cmd), h('button', { onclick: () => navigator.clipboard.writeText(cmd).then(() => toast('Copied')) }, 'Copy')),
-    h('p', { class: 'cmd' }, h('span', { class: 'muted' }, 'Codex · ~/.codex/config.toml'), h('code', { class: 'block' }, codex), h('button', { onclick: () => navigator.clipboard.writeText(codex).then(() => toast('Copied')) }, 'Copy')),
-    h('p', { class: 'muted' }, 'Then say: “open the bounce animation from styles.css in anni”. Any MCP client that speaks Streamable HTTP works.'),
+    h('p', {}, 'Your agent turns values from your code into controls here – animations on a timeline, styles, any literal – you tune them on the real page, and the agent writes them back to your files.'),
+    h('p', { class: 'cmd' }, h('span', { class: 'muted' }, 'Claude Code (recommended: the sidecar keeps file contents out of the model)'), h('code', {}, sidecar), h('button', { class: 'chrome-btn', onclick: copy(sidecar) }, 'Copy')),
+    h('p', { class: 'cmd' }, h('span', { class: 'muted' }, 'Codex · ~/.codex/config.toml'), h('code', { class: 'block' }, codex), h('button', { class: 'chrome-btn', onclick: copy(codex) }, 'Copy')),
+    h('p', { class: 'cmd' }, h('span', { class: 'muted' }, 'Zero-install, any Streamable HTTP client (the agent passes file contents itself)'), h('code', {}, http), h('button', { class: 'chrome-btn', onclick: copy(http) }, 'Copy')),
+    h('p', { class: 'muted' }, `Then say: “open the bounce animation from styles.css in anni”.${tokenRequired ? ' This instance requires a token (ANNI_TOKEN).' : ''}`),
+    h(
+      'p',
+      { class: 'muted small' },
+      `Files you open are stored in their session until it expires, ${ttlDays} days after the last activity, and are reachable by anyone with the link. Don't open secrets. Self-hosting is one `,
+      h('code', {}, 'wrangler deploy'),
+      '.',
+    ),
   );
 }
 
@@ -1006,11 +1020,11 @@ function renderStageBar() {
 const OVERLAY_CSS = `
 #anni-ov, #anni-ov * { pointer-events: none !important; }
 #anni-ov { position: fixed; inset: 0; z-index: 2147483647; }
-#anni-ov .box { position: absolute; box-sizing: border-box; border: calc(1px / var(--anni-z, 1)) dashed #3d9bff; }
-#anni-ov .box.sel { border-style: solid; box-shadow: 0 0 0 calc(1px / var(--anni-z, 1)) rgba(61, 155, 255, 0.3); }
-#anni-ov .box.hover { border-style: solid; background: rgba(61, 155, 255, 0.1); }
-#anni-ov .tag { position: absolute; left: 0; bottom: 100%; margin-bottom: 2px; padding: 1px 5px; border-radius: 2px;
-  background: #3d9bff; color: #fff; font: 500 10px/1.5 Inter, system-ui, sans-serif; white-space: nowrap;
+#anni-ov .box { position: absolute; box-sizing: border-box; border: calc(1px / var(--anni-z, 1)) dashed #e97130; }
+#anni-ov .box.sel { border-style: solid; box-shadow: 0 0 0 calc(1px / var(--anni-z, 1)) rgba(233, 113, 48, 0.3); }
+#anni-ov .box.hover { border-style: solid; background: rgba(233, 113, 48, 0.1); }
+#anni-ov .tag { position: absolute; left: 0; bottom: 100%; margin-bottom: 2px; padding: 1px 5px; border-radius: 0;
+  background: #e97130; color: #fafaf9; font: 500 10px/1.5 Inter, system-ui, sans-serif; white-space: nowrap;
   transform: scale(calc(1 / var(--anni-z, 1))); transform-origin: 0 100%; }
 html.anni-pick, html.anni-pick * { cursor: crosshair !important; }`;
 
@@ -1267,8 +1281,8 @@ function curveSvg(easing) {
   svg.setAttribute('class', 'curve');
   svg.innerHTML = `
     <path d="M${x(0)} ${y(0)} L${x(pts[0])} ${y(pts[1])} M${x(1)} ${y(1)} L${x(pts[2])} ${y(pts[3])}" stroke="#444" stroke-width="1"/>
-    <path d="M${x(0)} ${y(0)} C${x(pts[0])} ${y(pts[1])} ${x(pts[2])} ${y(pts[3])} ${x(1)} ${y(1)}" fill="none" stroke="#3d9bff" stroke-width="1.5"/>
-    <circle cx="${x(pts[0])}" cy="${y(pts[1])}" r="2.5" fill="#dfe6ee"/><circle cx="${x(pts[2])}" cy="${y(pts[3])}" r="2.5" fill="#dfe6ee"/>`;
+    <path d="M${x(0)} ${y(0)} C${x(pts[0])} ${y(pts[1])} ${x(pts[2])} ${y(pts[3])} ${x(1)} ${y(1)}" fill="none" stroke="#e97130" stroke-width="1.5"/>
+    <circle cx="${x(pts[0])}" cy="${y(pts[1])}" r="2.5" fill="#fafaf9"/><circle cx="${x(pts[2])}" cy="${y(pts[3])}" r="2.5" fill="#fafaf9"/>`;
   return svg;
 }
 
@@ -2108,14 +2122,21 @@ addEventListener('beforeunload', (e) => {
 
 $('#prop-list').replaceChildren(...KNOWN.map((p) => h('option', { value: p })));
 
-const events = new EventSource(`${BASE}/api/events`);
-events.addEventListener('session', () => load());
-events.addEventListener('external-change', () => {
-  if (!S.dirty) return load({ keepTime: true }).then(() => toast('File changed on disk – reloaded'));
-  banner([
-    h('span', {}, 'The file was changed outside of anni.'),
-    h('button', { onclick: () => load({ keepTime: true }) }, 'Reload (discards your edits)'),
-  ]);
-});
+let events;
+/** Server events (agent opened something, file changed on disk). The hosted root page has no session to follow. */
+function listen() {
+  if (events) return;
+  events = new EventSource(`${BASE}/api/events`);
+  events.addEventListener('session', () => load());
+  events.addEventListener('external-change', () => {
+    if (!S.dirty) return load({ keepTime: true }).then(() => toast('File changed on disk – reloaded'));
+    banner([
+      h('span', {}, 'The file was changed outside of anni.'),
+      h('button', { onclick: () => load({ keepTime: true }) }, 'Reload (discards your edits)'),
+    ]);
+  });
+}
 
-load();
+load().then(() => {
+  if (S.session || !S.hosted) listen();
+});

@@ -22,7 +22,9 @@ const fail = (e) => ({ ...text(`Error: ${e.message}`), isError: true });
 async function api(method, route, body) {
   let res;
   try {
-    res = await fetch(ANNI_URL + route, { method, headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) });
+    const headers = { 'Content-Type': 'application/json' };
+    if (process.env.ANNI_TOKEN) headers.Authorization = `Bearer ${process.env.ANNI_TOKEN}`; // private instances
+    res = await fetch(ANNI_URL + route, { method, headers, body: body && JSON.stringify(body) });
   } catch (e) {
     throw new Error(`Cannot reach anni at ${ANNI_URL}: ${e.cause?.code || e.message}`);
   }

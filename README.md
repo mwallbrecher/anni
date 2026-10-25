@@ -28,18 +28,20 @@ Without an agent: `node src/cli.js examples/demo.css`
 
 The same editor runs on Cloudflare Workers; the public instance is **https://anni.run**. Two ways to connect:
 
-**Recommended – the sidecar** (`anni-mcp`, a tiny local MCP process):
+**Recommended – the sidecar** (`anni-mcp` on npm, a tiny local MCP process):
 
 ```bash
-claude mcp add anni -- node /path/to/anni/src/sidecar.js
+claude mcp add anni -- npx -y anni-mcp
 ```
 
 ```toml
 # Codex: ~/.codex/config.toml
 [mcp_servers.anni]
-command = "node"
-args = ["/path/to/anni/src/sidecar.js"]
+command = "npx"
+args = ["-y", "anni-mcp"]
 ```
+
+(From a checkout: `claude mcp add anni -- node /path/to/anni/src/sidecar.js`.)
 
 The model only passes **file paths**; the sidecar reads and uploads the files to anni.run itself (plus the
 HTML page and the stylesheets/scripts it links), opens the browser tab, and when you hit **Save** it writes the
@@ -86,8 +88,14 @@ the code wires can point at a `.tsx`, a theme file, Tailwind config, wherever th
 with a source wire to your files and returns the diffs; changes without one are listed for the agent. Over the remote
 endpoint the agent receives `{id, from, to, source}` and applies them itself.
 
-Sessions are unguessable ids; there are no accounts. The HTTP API the sidecar uses is plain JSON:
-`POST /api/sessions`, `GET /api/sessions/<id>/wait?since=&timeout=`, `GET /api/sessions/<id>/state`.
+Sessions are unguessable ids; there are no accounts. A session – the files you opened included – is wiped
+**7 days after its last activity**, and anyone with the link can see it until then: don't open secrets, and self-host
+for anything sensitive. Uploads are capped (1.5 MB per file, 24 MB per session, 300 files). The HTTP API the sidecar
+uses is plain JSON: `POST /api/sessions`, `GET /api/sessions/<id>/wait?since=&timeout=`, `GET /api/sessions/<id>/state`.
+
+**Private instance:** `wrangler secret put ANNI_TOKEN --env production` makes `/mcp` and the session API require
+`Authorization: Bearer <token>`. The sidecar sends it from the `ANNI_TOKEN` environment variable; for the remote
+endpoint use `claude mcp add --transport http anni https://… --header "Authorization: Bearer <token>"`.
 
 ### Deploying your own
 

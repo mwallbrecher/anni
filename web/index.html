@@ -4,12 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>anni</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect x='3' y='3' width='10' height='10' rx='1' transform='rotate(45 8 8)' fill='%233d9bff'/></svg>">
+  <link rel="icon" type="image/png" sizes="64x64" href="brand/icon-64.png">
+  <link rel="apple-touch-icon" sizes="192x192" href="brand/icon-192.png">
+  <meta name="theme-color" content="#e97130">
+  <link rel="preload" href="fonts/DepartureMono.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><span class="logo"></span>anni</div>
+    <a class="brand" href="/" title="anni"><img class="logo" src="brand/anni-logo.png" alt="anni"></a>
     <div class="file" id="file"></div>
     <select id="anim-select" title="Animation"></select>
     <div class="seg" id="view" hidden>
@@ -65,7 +68,7 @@
 
   <div class="empty" id="empty" hidden>
     <div class="empty-card">
-      <span class="logo big"></span>
+      <img class="logo big" src="brand/anni-logo.png" alt="anni">
       <h1>No animation open</h1>
       <p>Tell your agent something like <code>open the bounce animation from styles.css in anni</code>.</p>
       <p class="muted">Or from a terminal: <code>node src/cli.js path/to/file.css</code></p>

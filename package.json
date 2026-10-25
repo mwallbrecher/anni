@@ -1,28 +1,35 @@
 {
-  "name": "anni",
-  "version": "0.1.0",
-  "description": "Timeline editor for CSS keyframe animations, driven via MCP",
-  "main": "src/mcp.js",
+  "name": "anni-mcp",
+  "version": "0.2.0",
+  "description": "anni: your agent turns values from your code into controls on the real page – CSS animations on a timeline, styles, any literal – and writes them back. This package is the local MCP sidecar for https://anni.run (and self-hosted instances).",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/mwallbrecher/anni.git" },
+  "homepage": "https://anni.run",
+  "keywords": ["mcp", "claude-code", "codex", "css", "animation", "keyframes", "design-tool", "timeline"],
+  "type": "module",
+  "main": "src/sidecar.js",
+  "bin": {
+    "anni-mcp": "src/sidecar.js",
+    "anni-mcp-local": "src/mcp.js",
+    "anni": "src/cli.js"
+  },
+  "files": ["src/", "web/", "examples/", "README.md"],
+  "engines": { "node": ">=20" },
   "scripts": {
     "start": "node src/cli.js",
-    "mcp": "node src/mcp.js",
+    "mcp": "node src/sidecar.js",
+    "mcp:local": "node src/mcp.js",
     "dev:worker": "wrangler dev",
     "deploy": "wrangler deploy --env production"
   },
-  "type": "module",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.1",
-    "@modelcontextprotocol/server": "^2.3.1",
-    "agents": "^0.30.1",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "postcss": "^8.5.31",
     "zod": "^4.6.7"
   },
-  "bin": {
-    "anni": "src/cli.js",
-    "anni-mcp": "src/sidecar.js",
-    "anni-mcp-local": "src/mcp.js"
-  },
   "devDependencies": {
+    "@modelcontextprotocol/server": "^2.3.1",
+    "agents": "0.30.1",
     "wrangler": "^4.152.0"
   }
 }
