@@ -1,0 +1,49 @@
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  gap: 32px;
+  background: #f4f1ea;
+  font-family: system-ui, sans-serif;
+}
+
+.ball {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: #e8553e;
+  animation: bounce 1.2s ease-in-out infinite;
+}
+
+.badge {
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: #1f2937;
+  color: white;
+  animation-name: pop;
+  animation-duration: 600ms;
+  animation-delay: 200ms;
+  animation-iteration-count: infinite;
+  animation-direction: alternate;
+}
+
+@keyframes bounce {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-120px) scale(1.05, 0.95);
+  }
+}
+
+@keyframes pop {
+  from {
+    transform: scale(0.8);
+    opacity: 0.4;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}

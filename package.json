@@ -1,0 +1,20 @@
+{
+  "name": "anni",
+  "version": "0.1.0",
+  "description": "Timeline editor for CSS keyframe animations, driven via MCP",
+  "main": "src/mcp.js",
+  "scripts": {
+    "start": "node src/cli.js",
+    "mcp": "node src/mcp.js"
+  },
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "postcss": "^8.5.31",
+    "zod": "^4.6.7"
+  },
+  "bin": {
+    "anni": "src/cli.js",
+    "anni-mcp": "src/mcp.js"
+  }
+}
