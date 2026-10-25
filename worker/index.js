@@ -3,7 +3,7 @@
 // agents connect to. Sessions are addressed as <id>.<ANNI_HOST> (isolated origins, preferred)
 // or /s/<id>/ (path mode, e.g. on workers.dev where there is no wildcard).
 import { createMcpHandler } from 'agents/mcp/server';
-import { createServer, sessionStub } from './mcp.js';
+import { call, createServer, isSessionId, openSession, sessionStub } from './mcp.js';
 
 export { AnniSession } from './session.js';
 
@@ -40,6 +40,23 @@ export default {
       return createMcpHandler((...a) => createServer(env, url.origin, ...a), {
         allowedHostnames: env.ANNI_HOST ? [env.ANNI_HOST] : undefined,
       })(request, env, ctx);
+    }
+    // Plain HTTP session API, used by the local sidecar (src/sidecar.js) so file bytes never pass through the model.
+    if (url.pathname === '/api/sessions' && request.method === 'POST') {
+      try {
+        return json(await openSession(env, url.origin, await request.json()));
+      } catch (e) {
+        return json({ error: e.message }, 400);
+      }
+    }
+    const sm = url.pathname.match(/^\/api\/sessions\/([a-z0-9]+)\/(wait|state)$/);
+    if (sm && request.method === 'GET') {
+      if (!isSessionId(sm[1])) return json({ error: 'Bad session id' }, 400);
+      try {
+        return json(await call(env, sm[1], sm[2] === 'wait' ? `/internal/wait?${url.searchParams}` : '/internal/state'));
+      } catch (e) {
+        return json({ error: e.message }, 400);
+      }
     }
     if (url.pathname === '/api/ping') return json({ app: 'anni', hosted: true });
     if (url.pathname === '/api/session') return json({ session: null, hosted: true, mcpUrl: `${url.origin}/mcp` });

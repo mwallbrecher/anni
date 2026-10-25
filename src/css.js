@@ -172,6 +172,7 @@ function keyframesOf(at) {
     if (node.type !== 'rule') return;
     blocks.push({
       offsets: node.selectors.map(parseOffset),
+      selector: node.selector, // kept so untouched offsets are written back verbatim (from/to stay from/to)
       decls: node.nodes
         .filter((d) => d.type === 'decl')
         .map((d) => ({ prop: d.prop, value: d.value, ...(d.important ? { important: true } : {}) })),
@@ -214,7 +215,9 @@ function writeKeyframes(at, blocks) {
   at.removeAll();
   const sorted = [...blocks].sort((a, b) => Math.min(...a.offsets) - Math.min(...b.offsets));
   for (const b of sorted) {
-    const rule = postcss.rule({ selector: [...b.offsets].sort((x, y) => x - y).map(fmtOffset).join(', ') });
+    const offsets = [...b.offsets].sort((x, y) => x - y);
+    const sameAsSource = b.selector && JSON.stringify(b.selector.split(',').map(parseOffset).sort((x, y) => x - y)) === JSON.stringify(offsets);
+    const rule = postcss.rule({ selector: sameAsSource ? b.selector : offsets.map(fmtOffset).join(', ') });
     if (sampleRule) rule.raws = { ...sampleRule.raws };
     else rule.raws = { before: '\n  ', after: '\n  ' }; // fresh @keyframes: postcss would otherwise copy the blank line between top-level rules
     for (const d of b.decls) {

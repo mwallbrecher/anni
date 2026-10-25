@@ -26,24 +26,39 @@ Without an agent: `node src/cli.js examples/demo.css`
 
 ## Hosted anni (connect any agent, nothing to install)
 
-The same editor runs on Cloudflare Workers as a **remote MCP server** (Streamable HTTP), so anyone can point
-Claude Code, Codex or any other MCP client at it. The public instance is **https://anni.run**:
+The same editor runs on Cloudflare Workers; the public instance is **https://anni.run**. Two ways to connect:
+
+**Recommended – the sidecar** (`anni-mcp`, a tiny local MCP process):
 
 ```bash
-claude mcp add --transport http anni https://anni.run/mcp
+claude mcp add anni -- node /path/to/anni/src/sidecar.js
 ```
 
 ```toml
 # Codex: ~/.codex/config.toml
 [mcp_servers.anni]
-url = "https://anni.run/mcp"
+command = "node"
+args = ["/path/to/anni/src/sidecar.js"]
 ```
 
-Hosted anni can't touch your disk, so the agent does the file I/O: it reads the file(s) and passes their
-contents to `open_animation(files, file, animation?, preview?)`, which returns a session link for you.
-When you hit **Save**, `wait_for_save(session)` – which the agent calls right after opening – returns
-the full edited file and the agent writes it back. `get_animation_state(session)` and `list_animations(content)`
-work as before. Sessions are unguessable ids; there are no accounts.
+The model only passes **file paths**; the sidecar reads and uploads the files to anni.run itself (plus the
+HTML page and the stylesheets/scripts it links), opens the browser tab, and when you hit **Save** it writes the
+edited file back to disk and hands the model a short diff. File contents never travel through the model's
+context, so a whole editing session costs a few hundred tokens, and every drag in between costs none.
+Tools: `open_animation(file, animation?, preview?, extra_files?, session?)`, `wait_for_save(session?)`,
+`get_animation_state(session?)`, `list_animations(file)`. `ANNI_URL` points it at a self-hosted instance.
+
+**Zero-install – the remote MCP endpoint** (Streamable HTTP), for clients that can't run a local process:
+
+```bash
+claude mcp add --transport http anni https://anni.run/mcp
+```
+
+Here the agent does the file I/O itself: it passes file *contents* to `open_animation(files, file, …)` and
+writes back what `wait_for_save(session)` returns. Same editor, same sessions – just more tokens.
+
+Sessions are unguessable ids; there are no accounts. The HTTP API the sidecar uses is plain JSON:
+`POST /api/sessions`, `GET /api/sessions/<id>/wait?since=&timeout=`, `GET /api/sessions/<id>/state`.
 
 ### Deploying your own
 

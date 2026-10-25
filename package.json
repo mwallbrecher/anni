@@ -19,7 +19,8 @@
   },
   "bin": {
     "anni": "src/cli.js",
-    "anni-mcp": "src/mcp.js"
+    "anni-mcp": "src/sidecar.js",
+    "anni-mcp-local": "src/mcp.js"
   },
   "devDependencies": {
     "wrangler": "^4.152.0"

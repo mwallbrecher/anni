@@ -21,11 +21,21 @@ export function sessionUrl(env, origin, id) {
   return `${origin}/s/${id}/`;
 }
 
-async function call(env, id, path, body) {
+export async function call(env, id, path, body) {
   const res = await sessionStub(env, id).fetch(new Request(`https://session.invalid${path}`, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}));
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
+}
+
+export const isSessionId = (s) => typeof s === 'string' && /^[a-z0-9]{8,32}$/.test(s);
+
+/** Creates (or updates) a session from uploaded files. Shared by the MCP tool and the plain HTTP API the sidecar uses. */
+export async function openSession(env, origin, { files, file, animation, preview, session }) {
+  if (!Array.isArray(files) || !files.length || typeof file !== 'string') throw new Error('files[] and file are required');
+  const id = isSessionId(session) ? session : newId();
+  const r = await call(env, id, '/internal/open', { files, file, animation, preview });
+  return { ...r, session: id, url: sessionUrl(env, origin, id) };
 }
 
 const fileSchema = z.object({ path: z.string().describe('Path relative to the project, e.g. "css/styles.css"'), content: z.string().describe('Full text content of the file') });
@@ -53,8 +63,8 @@ export function createServer(env, origin) {
     },
     async ({ files, file, animation, preview, session }) => {
       try {
-        const id = session && /^[a-z0-9]{8,32}$/.test(session) ? session : newId();
-        const r = await call(env, id, '/internal/open', { files, file, animation, preview });
+        const r = await openSession(env, origin, { files, file, animation, preview, session });
+        const id = r.session;
         const list = r.animations
           .map((a) => `- ${a.name}${a.usage ? ` (used by ${a.usage.selector}, ${a.timing.duration}ms)` : ' (not used by any rule)'}`)
           .join('\n');
@@ -62,7 +72,7 @@ export function createServer(env, origin) {
           [
             `Opened "${r.animation}" from ${r.file} in anni.`,
             `Session: ${id}`,
-            `Link for the user: ${sessionUrl(env, origin, id)}`,
+            `Link for the user: ${r.url}`,
             r.clients ? 'An editor tab is already open on this session and switched to it.' : 'Ask the user to open the link.',
             `Preview: ${r.preview ?? 'demo box (no HTML page among the files)'}`,
             '',
