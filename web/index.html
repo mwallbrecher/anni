@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="de">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>anni</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect x='3' y='3' width='10' height='10' rx='1' transform='rotate(45 8 8)' fill='%237c6cff'/></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect x='3' y='3' width='10' height='10' rx='1' transform='rotate(45 8 8)' fill='%233d9bff'/></svg>">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,10 +13,10 @@
     <div class="file" id="file"></div>
     <select id="anim-select" title="Animation"></select>
     <div class="spacer"></div>
-    <button class="ghost" id="undo" title="Rückgängig (Strg+Z)">↶</button>
-    <button class="ghost" id="redo" title="Wiederholen (Strg+Shift+Z)">↷</button>
-    <span class="dirty" id="dirty" hidden>● ungespeichert</span>
-    <button class="primary" id="save" title="In Datei speichern (Strg+S)">Speichern</button>
+    <button class="ghost" id="undo" title="Undo (Ctrl+Z)">↶</button>
+    <button class="ghost" id="redo" title="Redo (Ctrl+Shift+Z)">↷</button>
+    <span class="dirty" id="dirty" hidden>● unsaved</span>
+    <button class="primary" id="save" title="Write to file (Ctrl+S)">Save</button>
   </header>
 
   <div class="banner" id="banner" hidden></div>
@@ -25,23 +25,24 @@
     <section class="stage">
       <div class="stage-bar">
         <div class="seg" id="mode">
-          <button data-mode="page">Seite</button>
-          <button data-mode="demo">Demo-Box</button>
+          <button data-mode="page">Page</button>
+          <button data-mode="demo">Demo box</button>
         </div>
+        <button id="pick" title="Pick an element on the page (V, Esc cancels)">⌖ Pick element</button>
         <span class="muted" id="stage-info"></span>
       </div>
-      <div class="frame-wrap"><iframe id="frame" title="Vorschau"></iframe></div>
+      <div class="frame-wrap"><iframe id="frame" title="Preview"></iframe></div>
     </section>
     <aside class="inspector" id="inspector"></aside>
   </main>
 
   <section class="timeline" id="timeline" hidden>
     <div class="transport">
-      <button class="icon" id="play" title="Abspielen/Pause (Leertaste)">▶</button>
-      <button class="icon" id="rewind" title="Zum Anfang">⏮</button>
+      <button class="icon" id="play" title="Play / pause (Space)">▶</button>
+      <button class="icon" id="rewind" title="Back to start">⏮</button>
       <span class="time" id="time"></span>
       <label class="check"><input type="checkbox" id="loop" checked> Loop</label>
-      <select id="speed" title="Geschwindigkeit">
+      <select id="speed" title="Speed">
         <option value="0.1">0.1×</option>
         <option value="0.25">0.25×</option>
         <option value="0.5">0.5×</option>
@@ -49,8 +50,8 @@
         <option value="2">2×</option>
       </select>
       <div class="spacer"></div>
-      <span class="muted hint">Doppelklick in eine Spur = Keyframe · Ziehen = verschieben · Shift = 0.1 %</span>
-      <button id="add-kf">+ Keyframe am Playhead</button>
+      <span class="muted hint">The playhead drives every animation on the page · double-click a track = keyframe · drag = move · Shift = 0.1 %</span>
+      <button id="add-kf">+ Keyframe at playhead</button>
     </div>
     <div class="tracks" id="tracks"></div>
   </section>
@@ -58,13 +59,14 @@
   <div class="empty" id="empty" hidden>
     <div class="empty-card">
       <span class="logo big"></span>
-      <h1>Noch keine Animation offen</h1>
-      <p>Sag deinem Agenten z.&nbsp;B. <code>öffne die bounce-Animation aus styles.css in anni</code>.</p>
-      <p class="muted">Oder im Terminal: <code>node src/cli.js pfad/zur/datei.css</code></p>
+      <h1>No animation open</h1>
+      <p>Tell your agent something like <code>open the bounce animation from styles.css in anni</code>.</p>
+      <p class="muted">Or from a terminal: <code>node src/cli.js path/to/file.css</code></p>
     </div>
   </div>
 
   <div class="toast" id="toast"></div>
+  <datalist id="prop-list"></datalist>
   <script src="app.js" type="module"></script>
 </body>
 </html>

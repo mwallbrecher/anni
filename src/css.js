@@ -205,6 +205,7 @@ function writeKeyframes(at, blocks) {
   for (const b of sorted) {
     const rule = postcss.rule({ selector: [...b.offsets].sort((x, y) => x - y).map(fmtOffset).join(', ') });
     if (sampleRule) rule.raws = { ...sampleRule.raws };
+    else rule.raws = { before: '\n  ', after: '\n  ' }; // fresh @keyframes: postcss would otherwise copy the blank line between top-level rules
     for (const d of b.decls) {
       if (!d.prop.trim()) continue;
       const decl = postcss.decl({ prop: d.prop.trim(), value: d.value.trim(), important: !!d.important });
@@ -243,12 +244,62 @@ function writeTiming(name, usage, timing) {
 
 const timingChanged = (a, b) => Object.keys(DEFAULT_TIMING).some((k) => a[k] !== b[k]);
 
+const findDecl = (rule, prop) => {
+  let found = null;
+  rule.each((n) => {
+    if (n.type === 'decl' && n.prop.toLowerCase() === prop) found = n;
+  });
+  return found;
+};
+
+/**
+ * Adds a brand-new animation (created in the editor for a picked element): the @keyframes block
+ * plus an `animation` entry for its selector. An existing rule with that exact selector gets the
+ * entry appended to its shorthand / longhands so animations already on it keep working.
+ */
+function createAnimation(parsed, anim) {
+  const root = parsed.roots[parsed.roots.length - 1];
+  if (!root) return;
+  const { selector } = anim.usage;
+  const t = anim.timing;
+  let rule = null;
+  root.each((n) => {
+    if (!rule && n.type === 'rule' && n.selector === selector) rule = n;
+  });
+  const shorthand = rule && findDecl(rule, 'animation');
+  const nameDecl = rule && findDecl(rule, 'animation-name');
+  if (shorthand) shorthand.value = `${shorthand.value}, ${formatShorthandEntry(anim.name, t, 'ms', false)}`;
+  else if (nameDecl) {
+    // Longhand lists must stay aligned: pad missing longhands with their defaults for the existing entries.
+    const count = splitTop(nameDecl.value, ',').length;
+    const values = { name: anim.name, duration: fmtTime(t.duration, 'ms'), delay: fmtTime(t.delay, 'ms'), easing: t.easing, iterations: t.iterations, direction: t.direction, fill: t.fill };
+    const defaults = { duration: '0s', delay: '0s', easing: 'ease', iterations: '1', direction: 'normal', fill: 'none' };
+    for (const [key, prop] of Object.entries({ name: 'animation-name', ...LONGHANDS })) {
+      const decl = findDecl(rule, prop);
+      if (decl) decl.value = `${decl.value}, ${values[key]}`;
+      else if (key === 'name' || values[key] !== defaults[key]) rule.append({ prop, value: [...Array(count).fill(defaults[key]), values[key]].join(', ') });
+    }
+  } else {
+    rule = postcss.rule({ selector });
+    rule.raws.before = '\n\n';
+    rule.append({ prop: 'animation', value: formatShorthandEntry(anim.name, t, 'ms', false) });
+    root.append(rule);
+  }
+  const at = postcss.atRule({ name: 'keyframes', params: anim.name, nodes: [] });
+  at.raws.before = '\n\n';
+  root.append(at);
+  writeKeyframes(at, anim.keyframes);
+}
+
 /** Applies the model to a fresh parse of the file and returns the CSS of every source. */
 export function render(file, model) {
   const parsed = parseFile(file);
   for (const anim of model.animations) {
     const f = parsed.found.get(anim.name);
-    if (!f) continue;
+    if (!f) {
+      if (anim.usage?.create) createAnimation(parsed, anim);
+      continue;
+    }
     if (normKeyframes(anim.keyframes) !== normKeyframes(keyframesOf(f.at))) writeKeyframes(f.at, anim.keyframes);
     if (f.usage && timingChanged(anim.timing, f.usage.timing)) writeTiming(anim.name, f.usage, anim.timing);
   }

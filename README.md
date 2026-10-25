@@ -1,34 +1,38 @@
 # anni
 
-Kleiner Timeline-Editor für CSS-`@keyframes`. Ein Agent öffnet eine Animation per MCP,
-du justierst im Browser Timings und Werte, speicherst – und die CSS-Datei ist aktualisiert.
+A small timeline editor for CSS `@keyframes`, driven by an agent over MCP. The agent opens an
+animation from your project, you tune timing and values in the browser, hit save – and the
+CSS file is updated in place. Not a standalone motion tool: it edits the snippets and
+animations that already live in your project, on your own page.
 
-## Einrichten
+## Setup
 
 ```bash
 npm install
-claude mcp add --scope user anni -- node C:/Users/morit/Desktop/development/anni/src/mcp.js
+claude mcp add --scope user anni -- node /path/to/anni/src/mcp.js
 ```
 
-Danach in Claude Code z. B.: *„öffne die bounce-Animation aus styles.css in anni“*.
+Then, in Claude Code: *“open the bounce animation from styles.css in anni”*.
 
-Ohne Agent geht's auch: `node src/cli.js examples/demo.css`
+Without an agent: `node src/cli.js examples/demo.css`
 
-## MCP-Tools
+## MCP tools
 
-| Tool | Zweck |
+| Tool | Purpose |
 | --- | --- |
-| `open_animation(file, animation?, preview?)` | Öffnet `.css` oder `.html` (mit `<style>`) im Editor. Ist schon ein Tab offen, wechselt der, sonst geht ein neuer auf. |
-| `get_animation_state()` | Liefert die aktuelle Animation als CSS – inkl. ungespeicherter Änderungen. |
-| `list_animations(file)` | Listet alle `@keyframes` einer Datei mit Timing. |
+| `open_animation(file, animation?, preview?)` | Opens a `.css` or `.html` (with `<style>`) in the editor. Reuses the open tab if there is one, otherwise opens a new one. |
+| `get_animation_state()` | Returns the current animation as CSS – including unsaved edits. |
+| `list_animations(file)` | Lists every `@keyframes` in a file with its timing. |
 
 ## Editor
 
-- **Vorschau**: Bei einer `.css` sucht anni eine `.html` daneben, die sie einbindet (oder `preview` angeben). Läuft die Animation dort nicht (z. B. nur bei `:hover`), gibt's die **Demo-Box**.
-- **Timeline**: eine Spur pro Property. Rauten ziehen = Position ändern (Shift = 0,1 %), Doppelklick = neuer Keyframe, Klick auf Lineal = scrubben.
-- **Inspector**: Dauer, Delay, Easing (mit Kurve), Wiederholungen, Richtung, Fill-Mode; Werte des gewählten Keyframes.
-- Tasten: `Leertaste` Play/Pause · `←/→` Playhead (Shift = 10 %) · `Entf` Keyframe löschen · `Strg+Z/Strg+Shift+Z` · `Strg+S` speichern.
-- Ändert der Agent die Datei, lädt anni sie automatisch neu (bei ungespeicherten Änderungen wird gefragt).
+- **Preview**: for a `.css` file anni looks for an `.html` next to it that links it (or pass `preview`). If the animation doesn't run there (e.g. only on `:hover`), there's a **demo box**.
+- **Pick element** (`V`): click an element right in the preview, like in Figma or Rive. anni jumps to its animation, or creates a new `@keyframes` plus `animation` rule for the chosen selector with `+ Animation` (class, id or path selectable; an existing rule is extended, never overwritten).
+- **Properties** (Figma-style panel): always shows the common properties (`scale`, `rotate`, `translate`, `transform`, `opacity`, `filter`, colors, sizes) with their value **at the playhead** – keyed, interpolated, or the element's base value. Changing a value keys it at the playhead automatically. The diamond after each value shows its state: filled = set in the keyframe at the playhead (row highlighted), outline = animated but interpolated here, grey = not animated; click it to key/unkey. Editors fit the value: sliders for `opacity`/`scale`, number + unit for lengths and angles, color picker + alpha, and a function list for `transform`/`filter` (`translateY`, `scale`, `rotate`, `blur`, …). Click a property name to edit it as text; type any other property into the field at the bottom.
+- **Timeline**: one scene on the page's clock. Every animated element in the preview is a group (bar = delay + duration, hatched = further iterations) with its keyframes; expand it for one track per property. The playhead pauses and drives **every** CSS animation on the page – nothing keeps running on the side. Clicking a group selects its animation and element; animations from other files show greyed out. Drag diamonds to move them (Shift = 0.1 %), double-click a track for a new keyframe, click the ruler to scrub.
+- **Inspector**: duration, delay, easing (with curve), iterations, direction, fill mode.
+- Keys: `Space` play/pause · `←/→` playhead (Shift = 10 %) · `V` pick element · `Delete` remove keyframe · `Ctrl+Z` / `Ctrl+Shift+Z` · `Ctrl+S` save.
+- If the agent changes the file, anni reloads it automatically (and asks first when you have unsaved edits).
 
-Gespeichert wird nur, was sich geändert hat – der Rest der Datei bleibt unangetastet.
-Der Server läuft auf `http://127.0.0.1:4747` (`ANNI_PORT` zum Ändern).
+Only what changed is written – the rest of the file stays untouched.
+The server runs on `http://127.0.0.1:4747` (`ANNI_PORT` to change it).
