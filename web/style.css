@@ -109,6 +109,12 @@ code { font-family: var(--mono); background: var(--panel-2); padding: 1px 5px; b
 }
 .logo.big { width: 24px; height: 24px; border-radius: 3px; margin-bottom: 18px; }
 
+/* Explicit rows: hidden children (banner, timeline) must not shift the others into the wrong track. */
+.topbar { grid-row: 1; }
+.banner { grid-row: 2; }
+.workspace { grid-row: 3; }
+.timeline { grid-row: 4; }
+
 /* top bar */
 .topbar {
   display: flex;
@@ -213,6 +219,11 @@ iframe { width: 100%; height: 100%; border: 0; display: block; }
 .prop .key:hover { border-color: var(--bright); opacity: 1; background: var(--accent-soft); }
 .prop.keyed .key:hover { background: var(--accent); }
 .prop .raw { font-family: var(--mono); font-size: 11px; width: 100%; }
+.prop .key.dot { border-radius: 50%; width: 7px; height: 7px; transform: none; }
+.prop.changed { background: rgba(245, 184, 74, 0.07); }
+.prop.changed .key.dot { border-color: var(--warn); background: var(--warn); opacity: 1; }
+.prop .wire { grid-column: 1 / -1; font-size: 10px; color: var(--muted); margin: -1px 0 1px 4px; font-family: var(--mono); }
+.prop .check { font-size: 11px; height: 24px; }
 .prop .editor { gap: 4px; }
 .prop .editor input[type="range"] { flex: 1 1 50px; min-width: 40px; }
 .prop .fn input[type="range"] { flex: 1 1 100%; }

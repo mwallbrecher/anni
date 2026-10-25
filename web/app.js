@@ -1,7 +1,7 @@
 // anni editor: loads the open session from the local server, shows the preview in an
 // iframe (same origin), and drives the selected CSS animation with a paused Web Animation.
 
-import { FNS, KNOWN, defaultOf, fmtColor, fmtFns, fmtTokens, parseFns, parseNum, parseTokens, rangeFor, specOf, toHex, toRgba } from './props.js';
+import { FNS, KNOWN, LENGTH, defaultOf, fmtColor, fmtFns, fmtNum, fmtTokens, parseFns, parseNum, parseTokens, rangeFor, specOf, toHex, toRgba } from './props.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -95,6 +95,11 @@ async function load({ keepTime = false } = {}) {
     if (data.hosted) renderConnectCard(data.mcpUrl);
     return;
   }
+  if (S.session.kind === 'schema') return loadSchema(data);
+  S.schema = null;
+  $('#timeline').hidden = false;
+  $('#anim-select').hidden = false;
+  $('#mode').hidden = false;
   S.model = data.model;
   S.name = S.model.animations.some((a) => a.name === S.session.animation) ? S.session.animation : S.model.animations[0].name;
   S.saved = S.session.dirty ? '' : snapshot();
@@ -128,8 +133,172 @@ function renderConnectCard(mcpUrl) {
   );
 }
 
+/* ---------- schema sessions: controls the agent described, with live preview wires ---------- */
+
+function loadSchema(data) {
+  S.model = null;
+  S.schema = data.schema;
+  S.values = { ...data.values };
+  S.dirty = S.session.dirty;
+  S.savedValues = S.dirty ? null : { ...S.values };
+  S.vhistory = [];
+  S.vfuture = [];
+  S.sel = null;
+  S.el = null;
+  S.picking = false;
+  S.mode = 'page';
+  $('#timeline').hidden = true;
+  $('#anim-select').hidden = true;
+  $('#mode').hidden = true;
+  $('#pick').hidden = true;
+  $('#file').textContent = S.session.title;
+  $('#file').title = S.session.title;
+  banner(null);
+  renderSchemaHeader();
+  renderSchemaPanel();
+  S.css = null;
+  if (S.session.previewUrl) {
+    frame.removeAttribute('srcdoc'); // an srcdoc attribute, even empty, wins over src
+    frame.src = S.session.previewUrl;
+    $('#stage-info').textContent = '';
+  } else {
+    frame.removeAttribute('src');
+    frame.srcdoc = '<!doctype html><body style="margin:0;height:100vh;display:grid;place-items:center;background:#151515;color:#8d8d8d;font:12px system-ui">No preview page – values apply on save</body>';
+    $('#stage-info').textContent = 'Controls only';
+  }
+}
+
+function renderSchemaHeader() {
+  $('#dirty').hidden = !S.dirty;
+  $('#undo').disabled = !S.vhistory.length;
+  $('#redo').disabled = !S.vfuture.length;
+  document.title = `${S.dirty ? '● ' : ''}${S.session.title} · anni`;
+}
+
+const controlsOf = () => S.schema.groups.flatMap((g) => g.controls);
+
+/** Injects the preview wires as one <style> (css / var) and sets text wires in the preview document. */
+function applySchemaPreview() {
+  const doc = frame.contentDocument;
+  if (!S.schema || !doc?.head) return;
+  const rules = [];
+  for (const c of controlsOf()) {
+    const v = S.values[c.id];
+    const p = c.preview || {};
+    if (p.css) rules.push(`${p.css.selector} { ${p.css.prop}: ${v}${p.css.important ? ' !important' : ''}; }`);
+    if (p.var) rules.push(`${p.var.scope || ':root'} { ${p.var.name}: ${v}; }`);
+    if (p.text) for (const el of doc.querySelectorAll(p.text.selector)) if (el.textContent !== v) el.textContent = v;
+  }
+  let style = doc.getElementById('anni-schema');
+  if (!style) {
+    style = doc.createElement('style');
+    style.id = 'anni-schema';
+    doc.head.append(style);
+  }
+  const css = rules.join('\n');
+  if (style.textContent !== css) style.textContent = css;
+}
+
+let valuesTimer;
+function setValue(id, value) {
+  if (S.pendingCommit !== false) {
+    if (S.pendingCommit === true) commitValues();
+    S.pendingCommit = 'done';
+  } else commitValues();
+  S.values[id] = value;
+  afterValueChange();
+}
+function commitValues() {
+  S.vhistory.push({ ...S.values });
+  if (S.vhistory.length > 200) S.vhistory.shift();
+  S.vfuture = [];
+}
+function afterValueChange() {
+  S.dirty = !S.savedValues || JSON.stringify(S.values) !== JSON.stringify(S.savedValues);
+  applySchemaPreview();
+  renderSchemaHeader();
+  for (const row of document.querySelectorAll('#inspector .prop[data-id]')) row.classList.toggle('changed', !S.savedValues || S.values[row.dataset.id] !== S.savedValues[row.dataset.id]);
+  clearTimeout(valuesTimer);
+  valuesTimer = setTimeout(() => api('POST', '/api/render', { values: S.values, dirty: S.dirty }).catch(() => {}), 300);
+}
+function undoValues() {
+  if (!S.vhistory.length) return;
+  S.vfuture.push({ ...S.values });
+  S.values = S.vhistory.pop();
+  afterValueChange();
+  renderSchemaPanel();
+}
+function redoValues() {
+  if (!S.vfuture.length) return;
+  S.vhistory.push({ ...S.values });
+  S.values = S.vfuture.pop();
+  afterValueChange();
+  renderSchemaPanel();
+}
+
+async function saveSchema() {
+  try {
+    const r = await api('POST', '/api/save', { values: S.values });
+    S.savedValues = { ...S.values };
+    S.dirty = false;
+    renderSchemaHeader();
+    renderSchemaPanel();
+    toast(r.changed ? `Saved ${r.changes.length} change${r.changes.length === 1 ? '' : 's'} – your agent can pull them now` : 'No changes');
+  } catch (e) {
+    toast(`Error: ${e.message}`);
+  }
+}
+
+/** Editor for one control; `set` receives the new value as a string. */
+function controlEditor(c, value, set) {
+  const raw = () => h('input', { class: 'raw', value, spellcheck: 'false', oninput: (e) => set(e.target.value) });
+  if (c.type === 'boolean') return h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: value === 'true' || undefined, onchange: (e) => set(e.target.checked ? 'true' : 'false') }), value === 'true' ? 'on' : 'off');
+  if (c.type === 'enum') {
+    const opts = (c.options || []).map((o) => (typeof o === 'string' ? { value: o, label: o } : o));
+    return h('select', { onchange: (e) => set(e.target.value) }, opts.map((o) => h('option', { value: o.value, selected: o.value === value }, o.label || o.value)));
+  }
+  if (c.type === 'color') return colorEditor(value, set) || raw();
+  if (c.type === 'text') return raw();
+  const tok = parseNum(value);
+  if (tok.raw !== undefined) return raw();
+  const range = c.min !== undefined && c.max !== undefined ? [c.min, c.max, c.step ?? (c.max - c.min > 20 ? 1 : 0.01)] : undefined;
+  const units = c.type === 'length' ? c.units || LENGTH : c.unit ? [c.unit] : null;
+  if (units && !units.includes(tok.unit)) tok.unit = tok.unit || units[0];
+  const f = numField(tok, units, range, true, () => set(fmtNum(tok)));
+  return h('div', { class: 'editor' }, f.slider, f.num);
+}
+
+function renderSchemaPanel() {
+  const sections = S.schema.groups.map((g) =>
+    h(
+      'div',
+      { class: 'section props' },
+      g.label ? h('h2', {}, g.label) : null,
+      h(
+        'div',
+        { class: 'rows' },
+        g.controls.map((c) => {
+          const value = S.values[c.id];
+          const changed = !S.savedValues || value !== S.savedValues[c.id];
+          const wire = c.source ? `→ ${c.source.file}` : c.preview ? '' : 'applies on save';
+          return h(
+            'div',
+            { class: `prop${changed ? ' changed' : ''}${c.type === 'text' ? ' wide' : ''}`, 'data-id': c.id },
+            h('span', { class: 'name', title: c.id }, c.label || c.id),
+            controlEditor(c, value, (v) => setValue(c.id, v)),
+            h('span', { class: 'key dot', title: changed ? 'Changed since the last save' : 'Unchanged' }),
+            wire ? h('span', { class: 'wire' }, wire) : null,
+          );
+        }),
+      ),
+    ),
+  );
+  $('#inspector').replaceChildren(...sections);
+}
+
 function loadPreview() {
   S.css = null;
+  frame.removeAttribute('srcdoc');
   frame.src = S.mode === 'page' ? S.session.previewUrl : `${S.session.demoUrl}?v=${Date.now()}`;
   renderStageBar();
 }
@@ -140,7 +309,7 @@ frame.addEventListener('load', () => {
 });
 
 function checkPreview() {
-  if (!S.session) return;
+  if (!S.session || S.schema) return;
   renderTimeline(); // the page's animated elements are known now
   if (S.mode !== 'page') return;
   const found = previewAnimations().length;
@@ -176,6 +345,7 @@ function setAnimation(name) {
 let pushSeq = 0;
 let pushTimer;
 function push() {
+  if (S.schema) return applySchemaPreview();
   clearTimeout(pushTimer);
   pushTimer = setTimeout(async () => {
     const seq = ++pushSeq;
@@ -457,6 +627,7 @@ function splitSelected() {
 
 async function saveNow() {
   if (!S.session) return;
+  if (S.schema) return saveSchema();
   const selOffset = S.sel ? anim().keyframes[S.sel.bi].offsets[S.sel.oi] : null;
   try {
     const r = await api('POST', '/api/save', { model: S.model });
@@ -1507,21 +1678,28 @@ $('#rewind').onclick = () => {
 $('#loop').onchange = (e) => (S.loop = e.target.checked);
 $('#speed').onchange = (e) => (S.speed = +e.target.value);
 $('#save').onclick = saveNow;
-$('#undo').onclick = undo;
-$('#redo').onclick = redo;
+$('#undo').onclick = () => (S.schema ? undoValues() : undo());
+$('#redo').onclick = () => (S.schema ? redoValues() : redo());
 $('#add-kf').onclick = () => addKeyframe(playheadPct());
 $('#mode').onclick = (e) => e.target.dataset.mode && setMode(e.target.dataset.mode);
 $('#pick').onclick = () => setPicking(!S.picking);
 $('#anim-select').onchange = (e) => setAnimation(e.target.value);
 
 addEventListener('keydown', (e) => {
-  if (!S.model) return;
+  if (!S.model && !S.schema) return;
   const mod = e.ctrlKey || e.metaKey;
   if (mod && e.key.toLowerCase() === 's') {
     e.preventDefault();
     return saveNow();
   }
   const typing = e.target.matches('input, select, textarea');
+  if (S.schema) {
+    if (mod && !typing && (e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'y')) {
+      e.preventDefault();
+      return e.key.toLowerCase() === 'y' || e.shiftKey ? redoValues() : undoValues();
+    }
+    return;
+  }
   if (mod && e.key.toLowerCase() === 'z' && !typing) {
     e.preventDefault();
     return e.shiftKey ? redo() : undo();

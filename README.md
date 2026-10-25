@@ -57,6 +57,32 @@ claude mcp add --transport http anni https://anni.run/mcp
 Here the agent does the file I/O itself: it passes file *contents* to `open_animation(files, file, …)` and
 writes back what `wait_for_save(session)` returns. Same editor, same sessions – just more tokens.
 
+### Any value, not just keyframes: `present`
+
+The agent can turn *any* values from code into a panel. It describes controls; anni renders them next to the page;
+each control carries two wires:
+
+```json
+{ "id": "radius", "label": "Radius", "type": "length", "value": "8px", "min": 0, "max": 32,
+  "preview": { "css": { "selector": ".primary-button", "prop": "border-radius" } },
+  "source":  { "file": "src/app/globals.css",
+               "find": "  border-radius: 8px;\n  background: var(--ink);",
+               "replace": "  border-radius: {{value}};\n  background: var(--ink);" } }
+```
+
+- **preview wire** – how the value shows on the uploaded page, applied live by anni while you drag:
+  `css: {selector, prop}` (a declaration), `var: {name, scope?}` (a custom property) or `text: {selector}`.
+- **source wire** – where the value lives in code: `find` (a snippet that occurs exactly once) with an optional
+  `replace` template, or `range: [start, end]` with a `template`. Omit it and the change is only reported.
+
+Types: `number`, `length`, `color`, `enum`, `boolean`, `text`. The preview page is typically a rendered route of the
+running app (fetch its HTML and CSS to files) – so this works for React, Vue, Rails, anything that renders to the browser;
+the code wires can point at a `.tsx`, a theme file, Tailwind config, wherever the literal is.
+
+`present(schema, files?, preview?)` → link · `wait_for_changes(session?)` → on Save the sidecar applies every change
+with a source wire to your files and returns the diffs; changes without one are listed for the agent. Over the remote
+endpoint the agent receives `{id, from, to, source}` and applies them itself.
+
 Sessions are unguessable ids; there are no accounts. The HTTP API the sidecar uses is plain JSON:
 `POST /api/sessions`, `GET /api/sessions/<id>/wait?since=&timeout=`, `GET /api/sessions/<id>/state`.
 

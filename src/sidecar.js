@@ -186,6 +186,169 @@ server.registerTool(
   },
 );
 
+/* ---------- schema sessions: the agent describes controls, anni renders them, the sidecar applies code wires ---------- */
+
+/** Uploads local files so a page's relative links keep working; returns { files, rel } with paths relative to their common root. */
+function bundle(paths) {
+  const abs = [...new Set(paths.map((p) => path.resolve(p)))];
+  for (const p of abs) if (!fs.existsSync(p)) throw new Error(`File not found: ${p}`);
+  const root = abs.length
+    ? abs
+        .map((p) => path.dirname(p))
+        .reduce((r, d) => {
+          while (!d.startsWith(r + path.sep) && d !== r) r = path.dirname(r);
+          return r;
+        })
+    : process.cwd();
+  const rel = (p) => path.relative(root, path.resolve(p)).split(path.sep).join('/');
+  return { files: abs.map((p) => ({ path: rel(p), content: fs.readFileSync(p, 'utf8') })), rel };
+}
+
+const fill = (tpl, value) => tpl.replaceAll('{{value}}', value);
+
+/** Applies one change to a local file through its source wire. Returns the diff, or throws with a precise reason. */
+function applyWire(change, cwd) {
+  const s = change.source;
+  const file = path.resolve(cwd, s.file);
+  const before = fs.readFileSync(file, 'utf8');
+  let after;
+  if (s.find) {
+    const n = before.split(s.find).length - 1;
+    if (n !== 1) throw new Error(`"${s.find}" occurs ${n} times in ${s.file} (must be exactly once)`);
+    let replacement;
+    if (s.replace) replacement = fill(s.replace, change.to);
+    else if (s.find.includes(change.from)) replacement = s.find.replace(change.from, change.to);
+    else throw new Error(`the old value "${change.from}" does not occur inside find="${s.find}" and no replace template was given`);
+    after = before.replace(s.find, replacement);
+  } else if (s.range) {
+    const [a, b] = s.range;
+    after = before.slice(0, a) + fill(s.template || '{{value}}', change.to) + before.slice(b);
+  } else throw new Error('source wire needs find or range');
+  fs.writeFileSync(file, after);
+  return unifiedDiff(before, after, s.file, 24);
+}
+
+server.registerTool(
+  'present',
+  {
+    title: 'Present controls in anni',
+    description:
+      'Turns values from code into a touchable panel: describe controls (number, length, color, enum, boolean, text), each with an optional ' +
+      'preview wire (how it shows on the page: a CSS declaration `css: {selector, prop}`, a custom property `var: {name}` or an element\'s `text: {selector}`) ' +
+      'and a source wire (`source: {file, find, replace?}` or `{file, range, template?}`, where the value lives in code). Pass the preview page and the ' +
+      'files it links as local PATHS; this tool uploads them, opens the browser, and wait_for_changes later applies the source wires to your files itself. ' +
+      'A rendered route of a running app (fetch its HTML + CSS to files) makes a faithful preview; without a page the controls still work.',
+    inputSchema: {
+      schema: z.object({
+        title: z.string(),
+        groups: z.array(
+          z.object({
+            label: z.string().optional(),
+            controls: z.array(
+              z.object({
+                id: z.string(),
+                label: z.string().optional(),
+                type: z.enum(['number', 'length', 'color', 'enum', 'boolean', 'text']),
+                value: z.union([z.string(), z.number(), z.boolean()]),
+                min: z.number().optional(),
+                max: z.number().optional(),
+                step: z.number().optional(),
+                unit: z.string().optional(),
+                units: z.array(z.string()).optional(),
+                options: z.array(z.union([z.string(), z.object({ value: z.string(), label: z.string().optional() })])).optional(),
+                preview: z
+                  .object({
+                    css: z.object({ selector: z.string(), prop: z.string(), important: z.boolean().optional() }).optional(),
+                    var: z.object({ name: z.string(), scope: z.string().optional() }).optional(),
+                    text: z.object({ selector: z.string() }).optional(),
+                  })
+                  .optional(),
+                source: z
+                  .object({
+                    file: z.string(),
+                    find: z.string().optional(),
+                    replace: z.string().optional(),
+                    range: z.array(z.number().int()).length(2).optional(),
+                    template: z.string().optional(),
+                  })
+                  .optional(),
+              }),
+            ),
+          }),
+        ),
+      }),
+      files: z.array(z.string()).optional().describe('Local paths: the preview page and what it links (stylesheets, scripts, images)'),
+      preview: z.string().optional().describe('Local path of the HTML page to show (defaults to the first .html in files)'),
+      session: z.string().optional().describe('Existing session id to update in place'),
+    },
+  },
+  async ({ schema, files = [], preview, session }) => {
+    try {
+      const prev = preview ? path.resolve(preview) : files.map((p) => path.resolve(p)).find((p) => /\.html?$/i.test(p)) || null;
+      const all = [...files, ...(prev ? [prev, ...linkedAssets(fs.readFileSync(prev, 'utf8'), path.dirname(prev))] : [])];
+      const b = bundle(all);
+      const r = await api('POST', '/api/sessions', { files: b.files, preview: prev ? b.rel(prev) : undefined, schema, title: schema.title, session });
+      sessions.set(r.session, { kind: 'schema', cwd: process.cwd(), rev: r.rev });
+      lastSession = r.session;
+      if (!r.clients && !process.env.ANNI_NO_BROWSER) openBrowser(r.url);
+      return text(
+        [
+          `Presented "${r.title}" (${r.controls} controls) in anni: ${r.url}`,
+          r.clients ? 'The editor tab that was already open switched to it.' : 'Opened a new browser tab (share the link if it did not appear).',
+          `Preview: ${prev ?? 'none – controls only'}${b.files.length ? ` · uploaded ${b.files.length} file${b.files.length > 1 ? 's' : ''}` : ''}`,
+          `Session: ${r.session}`,
+          '',
+          'Next: call wait_for_changes. When the user saves it applies the source wires to your files and returns the diffs.',
+        ].join('\n'),
+      );
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
+server.registerTool(
+  'wait_for_changes',
+  {
+    title: 'Wait for the user to save changed values',
+    description:
+      'Blocks until the user saves in a present() session (or the timeout passes). Applies every changed control that has a source wire to the local ' +
+      'file and returns the diffs; changes without a source wire are listed for you to apply. Call again while the user keeps working.',
+    inputSchema: {
+      session: z.string().optional().describe('Session id from present (defaults to the last opened one)'),
+      timeout_seconds: z.number().int().min(1).max(300).optional(),
+    },
+  },
+  async ({ session = lastSession, timeout_seconds = 60 }) => {
+    try {
+      const s = session && sessions.get(session);
+      if (!s) throw new Error(session ? `Unknown session "${session}" (sessions are tracked per sidecar process)` : 'No session open – call present first');
+      const r = await api('GET', `/api/sessions/${session}/wait?since=${s.rev}&timeout=${timeout_seconds * 1000}`);
+      if (!r.saved) return text(`No save yet (timeout). The editor ${r.dirty ? 'has unsaved edits' : 'has no pending edits'}. Call wait_for_changes again to keep waiting.`);
+      if (r.kind !== 'schema') throw new Error('This session is an animation session – use wait_for_save');
+      s.rev = r.rev;
+      const out = [`Saved revision ${r.rev} – ${r.changes.length} change${r.changes.length === 1 ? '' : 's'}.`];
+      const manual = [];
+      for (const c of r.changes) {
+        if (!c.source) {
+          manual.push(c);
+          continue;
+        }
+        try {
+          out.push('', `${c.label}: ${c.from} → ${c.to}  (applied to ${c.source.file})`, applyWire(c, s.cwd));
+        } catch (e) {
+          out.push('', `${c.label}: ${c.from} → ${c.to}  NOT applied: ${e.message}`);
+          manual.push(c);
+        }
+      }
+      if (manual.length) out.push('', 'Apply these yourself:', JSON.stringify(manual.map(({ id, label, from, to, source }) => ({ id, label, from, to, source })), null, 2));
+      return text(out.join('\n'));
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
 server.registerTool(
   'get_animation_state',
   {
