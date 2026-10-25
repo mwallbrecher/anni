@@ -1,11 +1,23 @@
 {
   "name": "anni-mcp",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "anni: your agent turns values from your code into controls on the real page – CSS animations on a timeline, styles, any literal – and writes them back. This package is the local MCP sidecar for https://anni.run (and self-hosted instances).",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/mwallbrecher/anni.git" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mwallbrecher/anni.git"
+  },
   "homepage": "https://anni.run",
-  "keywords": ["mcp", "claude-code", "codex", "css", "animation", "keyframes", "design-tool", "timeline"],
+  "keywords": [
+    "mcp",
+    "claude-code",
+    "codex",
+    "css",
+    "animation",
+    "keyframes",
+    "design-tool",
+    "timeline"
+  ],
   "type": "module",
   "main": "src/sidecar.js",
   "bin": {
@@ -13,8 +25,15 @@
     "anni-mcp-local": "src/mcp.js",
     "anni": "src/cli.js"
   },
-  "files": ["src/", "web/", "examples/", "README.md"],
-  "engines": { "node": ">=20" },
+  "files": [
+    "src/",
+    "web/",
+    "examples/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node src/cli.js",
     "mcp": "node src/sidecar.js",
