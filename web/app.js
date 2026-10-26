@@ -135,9 +135,9 @@ async function load({ keepTime = false } = {}) {
 
 /** Root of a hosted anni: nothing to edit here, show how an agent connects. */
 function renderConnectCard(mcpUrl, { ttlDays = 7, tokenRequired = false } = {}) {
-  const sidecar = 'claude mcp add anni -- npx -y github:mwallbrecher/anni';
+  const sidecar = 'claude mcp add anni -- npx -y anni-mcp';
   const http = `claude mcp add --transport http anni ${mcpUrl}`;
-  const codex = `[mcp_servers.anni]\ncommand = "npx"\nargs = ["-y", "github:mwallbrecher/anni"]`;
+  const codex = `[mcp_servers.anni]\ncommand = "npx"\nargs = ["-y", "anni-mcp"]`;
   const copy = (s) => () => navigator.clipboard.writeText(s).then(() => toast('Copied'));
   $('.empty-card').replaceChildren(
     h('img', { class: 'logo big', src: 'brand/anni-logo.png', alt: 'anni' }),

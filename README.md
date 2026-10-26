@@ -28,21 +28,21 @@ Without an agent: `node src/cli.js examples/demo.css`
 
 The same editor runs on Cloudflare Workers; the public instance is **https://anni.run**. Two ways to connect:
 
-**Recommended – the sidecar** (a tiny local MCP process, installed straight from this GitHub repo):
+**Recommended – the sidecar** ([`anni-mcp`](https://www.npmjs.com/package/anni-mcp) on npm, a tiny local MCP process):
 
 ```bash
-claude mcp add anni -- npx -y github:mwallbrecher/anni
+claude mcp add anni -- npx -y anni-mcp
 ```
 
 ```toml
 # Codex: ~/.codex/config.toml
 [mcp_servers.anni]
 command = "npx"
-args = ["-y", "github:mwallbrecher/anni"]
+args = ["-y", "anni-mcp"]
 ```
 
-The `github:` spec pins npx to this repository, so nobody can take the place of it by registering a package
-name. (From a checkout: `claude mcp add anni -- node /path/to/anni/src/sidecar.js`.)
+To run the newest code from this repository instead of the last npm release: `npx -y github:mwallbrecher/anni`.
+From a checkout: `claude mcp add anni -- node /path/to/anni/src/sidecar.js`.
 
 The model only passes **file paths**; the sidecar reads and uploads the files to anni.run itself (plus the
 HTML page and the stylesheets/scripts it links), opens the browser tab, and when you hit **Save** it writes the

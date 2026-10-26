@@ -5,7 +5,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mwallbrecher/anni.git"
+    "url": "git+https://github.com/mwallbrecher/anni.git"
   },
   "homepage": "https://anni.run",
   "keywords": [
