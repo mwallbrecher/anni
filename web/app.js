@@ -135,9 +135,9 @@ async function load({ keepTime = false } = {}) {
 
 /** Root of a hosted anni: nothing to edit here, show how an agent connects. */
 function renderConnectCard(mcpUrl, { ttlDays = 7, tokenRequired = false } = {}) {
-  const sidecar = 'claude mcp add anni -- npx -y anni-mcp';
+  const sidecar = 'claude mcp add anni -- npx -y github:mwallbrecher/anni';
   const http = `claude mcp add --transport http anni ${mcpUrl}`;
-  const codex = `[mcp_servers.anni]\ncommand = "npx"\nargs = ["-y", "anni-mcp"]`;
+  const codex = `[mcp_servers.anni]\ncommand = "npx"\nargs = ["-y", "github:mwallbrecher/anni"]`;
   const copy = (s) => () => navigator.clipboard.writeText(s).then(() => toast('Copied'));
   $('.empty-card').replaceChildren(
     h('img', { class: 'logo big', src: 'brand/anni-logo.png', alt: 'anni' }),
@@ -202,6 +202,28 @@ function renderSchemaHeader() {
 
 const controlsOf = () => S.schema.groups.flatMap((g) => g.controls);
 
+/**
+ * Whether two CSS values mean the same, so a control dragged back to where it started counts as unchanged:
+ * `8px` = `8.0px`, `#fff` = `white` = `rgb(255, 255, 255)`, spacing and case don't matter.
+ */
+function sameValue(a, b) {
+  if (a === b) return true;
+  if (a == null || b == null) return false;
+  const x = String(a).trim().replace(/\s+/g, ' ');
+  const y = String(b).trim().replace(/\s+/g, ' ');
+  if (x.toLowerCase() === y.toLowerCase()) return true;
+  const tx = parseTokens(x);
+  const ty = parseTokens(y);
+  // Numbers match within half a percent: a slider snaps to its step and can't land exactly on an
+  // in-between value it started from (opacity 0.998 → 1).
+  const near = (p, q) => Math.abs(p - q) <= Math.max(0.005, 0.005 * Math.max(Math.abs(p), Math.abs(q)));
+  if (tx && ty) return tx.length === ty.length && tx.every((t, i) => near(t.n, ty[i].n) && t.unit === ty[i].unit);
+  const cx = toRgba(x);
+  const cy = cx && toRgba(y);
+  return !!(cx && cy) && ['r', 'g', 'b'].every((k) => Math.round(cx[k]) === Math.round(cy[k])) && Math.abs(cx.a - cy.a) < 0.005;
+}
+const sameValues = (a, b) => !!a && !!b && Object.keys(a).every((k) => sameValue(a[k], b[k]));
+
 /** Injects the preview wires as one <style> (css / var) and sets text wires in the preview document. */
 function applySchemaPreview() {
   const doc = frame.contentDocument;
@@ -239,10 +261,10 @@ function commitValues() {
   S.vfuture = [];
 }
 function afterValueChange() {
-  S.dirty = !S.savedValues || JSON.stringify(S.values) !== JSON.stringify(S.savedValues);
+  S.dirty = !sameValues(S.values, S.savedValues);
   applySchemaPreview();
   renderSchemaHeader();
-  for (const row of document.querySelectorAll('#inspector .prop[data-id]')) row.classList.toggle('changed', !S.savedValues || S.values[row.dataset.id] !== S.savedValues[row.dataset.id]);
+  for (const row of document.querySelectorAll('#inspector .prop[data-id]')) row.classList.toggle('changed', !S.savedValues || !sameValue(S.values[row.dataset.id], S.savedValues[row.dataset.id]));
   clearTimeout(valuesTimer);
   valuesTimer = setTimeout(() => api('POST', '/api/render', { values: S.values, dirty: S.dirty }).catch(() => {}), 300);
 }
@@ -310,7 +332,7 @@ function renderSchemaPanel() {
         { class: 'rows' },
         g.controls.map((c) => {
           const value = S.values[c.id];
-          const changed = !S.savedValues || value !== S.savedValues[c.id];
+          const changed = !S.savedValues || !sameValue(value, S.savedValues[c.id]);
           const wire = c.source ? `→ ${c.source.file}` : c.preview ? '' : 'applies on save';
           return h(
             'div',
@@ -556,7 +578,7 @@ function setEditorValue(c, value) {
     if (S.pendingCommit === true) commitEditor();
     S.pendingCommit = 'done';
   } else commitEditor();
-  if (value === c.value) S.editorChanges.delete(c.id);
+  if (sameValue(value, c.value)) S.editorChanges.delete(c.id);
   else S.editorChanges.set(c.id, { control: c, value });
   afterEditorChange();
 }
@@ -764,13 +786,44 @@ const undo = () => restore(S.history.pop(), S.history, S.future);
 const redo = () => restore(S.future.pop(), S.future, S.history);
 
 // Typing in an input should create one undo step per focus, not per keystroke.
+// One undo step per edit gesture: from focus to blur while typing, and from press to release while
+// dragging – some browsers (Safari) don't focus a slider on click, so focus alone would turn every tick of
+// a drag into its own step.
+const EDIT_CONTROL = '.inspector input, .inspector select, #time input';
+let pressedControl = null;
 document.addEventListener('focusin', (e) => {
-  if (e.target.matches('.inspector input, .inspector select, #time input')) S.pendingCommit = true;
+  if (e.target.matches?.(EDIT_CONTROL)) S.pendingCommit = true;
 });
 document.addEventListener('focusout', () => {
+  if (pressedControl) return; // mid-drag: the gesture ends on release
   S.pendingCommit = false;
   endDurationEdit();
+  if (S.model) setTimeout(schedulePanel, 0);
 });
+document.addEventListener(
+  'pointerdown',
+  (e) => {
+    const el = e.target.closest?.(EDIT_CONTROL);
+    if (!el) return;
+    pressedControl = el;
+    S.pendingCommit = true;
+  },
+  true,
+);
+const releaseControl = () => {
+  if (!pressedControl) return;
+  const el = pressedControl;
+  pressedControl = null;
+  // Let the release's own input/change events land in this step first; a still-focused field keeps grouping.
+  setTimeout(() => {
+    if (document.activeElement === el && el.isConnected) return;
+    S.pendingCommit = false;
+    endDurationEdit();
+    if (S.model) schedulePanel();
+  }, 0);
+};
+addEventListener('pointerup', releaseControl, true);
+addEventListener('pointercancel', releaseControl, true);
 
 function propsOf(a) {
   const props = [];
@@ -871,6 +924,29 @@ function valueAt(prop, at = blockAtPlayhead()) {
 
 /** Writes `value` for `prop` at the playhead: into the keyframe there, or into a new one (auto-key). */
 function keyAt(prop, value) {
+  // Within one edit gesture, coming back to the value it started at undoes the gesture's auto-key entirely,
+  // so a control dragged back to where it was leaves no keyframe, no "keyed" row and no unsaved marker.
+  const fresh = S.pendingCommit !== 'done' || S.keyGesture?.prop !== prop || S.keyGesture?.name !== S.name;
+  if (fresh) S.keyGesture = { prop, name: S.name, original: valueAt(prop), snap: snapshot(), sel: S.sel };
+  if (!fresh && sameValue(value, S.keyGesture.original)) {
+    change(
+      () => {
+        S.model.animations = JSON.parse(S.keyGesture.snap);
+        S.sel = S.keyGesture.sel;
+      },
+      { render: 'light' },
+    );
+    // The gesture's undo step would now be a no-op: drop it, and let a further move start a new one.
+    if (S.history.at(-1)?.snap === S.keyGesture.snap) {
+      S.history.pop();
+      S.pendingCommit = true;
+      renderHeader();
+    }
+    $('#kf-section')?.replaceWith(renderKeyframeSection(anim()));
+    const panel = $('#props');
+    if (panel) panel.dataset.key = ''; // the row marked itself keyed while dragging: redraw it once the gesture ends
+    return;
+  }
   const a = anim();
   let at = blockAtPlayhead();
   change(
