@@ -318,7 +318,11 @@ iframe { width: 100%; height: 100%; border: 0; display: block; }
 }
 .transport { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 5px 10px; border-bottom: 1px solid var(--line); background: #1c1c1c; }
 .time { font-family: var(--mono); font-size: 11px; min-width: 120px; color: var(--muted); background: var(--field); border-radius: var(--radius); padding: 3px 8px; font-variant-numeric: tabular-nums; }
-.time b { color: var(--text); font-weight: 500; }
+.time { display: inline-flex; align-items: center; gap: 4px; padding: 0 8px; height: 24px; }
+.time input { width: 52px; height: 20px; padding: 0 2px; background: transparent; border: 1px solid transparent; font: inherit; color: var(--muted); text-align: right; }
+.time input#t-now { color: var(--text); }
+.time input:hover { border-color: var(--line-2); }
+.time input:focus { border-color: var(--accent); color: var(--bright); }
 .check { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; }
 .check input { height: auto; accent-color: var(--accent); }
 .transport select { font-size: 11px; width: 60px; }

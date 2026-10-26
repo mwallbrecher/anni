@@ -765,9 +765,12 @@ const redo = () => restore(S.future.pop(), S.future, S.history);
 
 // Typing in an input should create one undo step per focus, not per keystroke.
 document.addEventListener('focusin', (e) => {
-  if (e.target.matches('.inspector input, .inspector select')) S.pendingCommit = true;
+  if (e.target.matches('.inspector input, .inspector select, #time input')) S.pendingCommit = true;
 });
-document.addEventListener('focusout', () => (S.pendingCommit = false));
+document.addEventListener('focusout', () => {
+  S.pendingCommit = false;
+  endDurationEdit();
+});
 
 function propsOf(a) {
   const props = [];
@@ -1026,6 +1029,60 @@ document.addEventListener('paste', (e) => {
   e.preventDefault();
   pasteAtPlayhead(decls);
 });
+
+/* ---------- duration edits ---------- */
+
+/*
+ * Two ways to change a duration, one per place:
+ * - Timing panel (keepTimes false): CSS's own behaviour – keyframes are percentages, so they stretch with it.
+ * - Timeline time box (keepTimes true): keyframes keep their times in ms, like a design tool's work area –
+ *   extra time is added at the end (a held 100% keyframe keeps the final state), shortening trims the end.
+ * Everything is recomputed from the state at the start of the edit, so typing 2 → 22 → 2200 never squashes
+ * keyframes on the way.
+ */
+let durEdit = null;
+
+function setDuration(v, { keepTimes = false } = {}) {
+  const a = anim();
+  if (durEdit?.hold) {
+    const i = a.keyframes.indexOf(durEdit.hold);
+    if (i >= 0) a.keyframes.splice(i, 1);
+    durEdit.hold = null;
+  }
+  if (!durEdit || durEdit.name !== a.name || durEdit.offsets.length !== a.keyframes.length) {
+    durEdit = { name: a.name, dur: a.timing.duration, offsets: a.keyframes.map((b) => [...b.offsets]), hold: null, clamped: 0 };
+  }
+  const next = Math.max(1, Math.round(v));
+  a.timing.duration = next;
+  if (!keepTimes) {
+    a.keyframes.forEach((b, i) => (b.offsets = [...durEdit.offsets[i]]));
+    durEdit.clamped = 0;
+    return;
+  }
+  const ratio = durEdit.dur / next;
+  let clamped = 0;
+  a.keyframes.forEach((b, i) => {
+    b.offsets = durEdit.offsets[i].map((o) => {
+      const n = Math.round(o * ratio * 100) / 100;
+      if (n > 100.001) clamped++;
+      return Math.min(100, n);
+    });
+  });
+  durEdit.clamped = clamped;
+  // Longer: the old 100% moved inwards; hold its state to the new end so nothing snaps back to the base style.
+  const hadEnd = durEdit.offsets.some((offs) => offs.includes(100));
+  if (hadEnd && !a.keyframes.some((b) => b.offsets.includes(100))) {
+    const hold = { offsets: [100], decls: propsOf(a).map((prop) => ({ prop, value: valueNear(a, prop, 100) })) };
+    a.keyframes.push(hold);
+    durEdit.hold = hold;
+  }
+}
+
+function endDurationEdit() {
+  if (!durEdit) return;
+  if (durEdit.clamped) toast(`${durEdit.clamped} keyframe${durEdit.clamped === 1 ? '' : 's'} past the new end moved to 100% (⌘Z to undo)`);
+  durEdit = null;
+}
 
 function splitSelected() {
   const a = anim();
@@ -1431,8 +1488,12 @@ function renderInspector() {
     h(
       'div',
       { class: 'grid2' },
-      field('Duration', numberInput(t.duration, 'ms', (v) => change(() => (t.duration = Math.max(0, v)), { render: 'light' }))),
-      field('Delay', numberInput(t.delay, 'ms', (v) => change(() => (t.delay = v), { render: 'light' }))),
+      Object.assign(field('Animation duration', numberInput(t.duration, 'ms', (v) => change(() => setDuration(v), { render: 'light' }))), {
+        title: 'Length of one iteration. Keyframes keep their percentages, so they stretch with it. To add or trim time and keep keyframes at their ms, change the duration in the time box of the timeline.',
+      }),
+      Object.assign(field('Delay', numberInput(t.delay, 'ms', (v) => change(() => (t.delay = v), { render: 'light' }))), {
+        title: 'Wait before the first iteration starts (animation-delay). Moves the whole animation later on the page timeline; repeats do not wait again. A negative delay starts it partway in.',
+      }),
       field('Easing', h('div', { class: 'easing-row' }, easingSelect, easingText), 'wide'),
       h('div', { class: 'field wide' }, curveHost),
       field('Iterations', iterInput),
@@ -2072,8 +2133,34 @@ function updatePlayhead() {
     ph.style.left = `${p}%`;
     ph.hidden = p < -0.5 || p > 100.5;
   }
-  $('#time').innerHTML = `<b>${Math.round(S.t)}ms</b> / ${Math.round(sceneDur())}ms`;
+  const now = $('#t-now');
+  const total = $('#t-dur');
+  if (document.activeElement !== now) now.value = Math.round(S.t);
+  if (document.activeElement !== total) total.value = Math.round(anim().timing.duration);
+  total.title = `Duration of @keyframes ${S.name} – keyframes keep their times in ms: longer adds time at the end, shorter trims it (the Timing panel stretches them instead)`;
   schedulePanel();
+}
+
+/* Time box: type a time to jump the playhead there; type a duration to resize the edited animation. */
+$('#t-now').addEventListener('change', (e) => {
+  const v = parseFloat(e.target.value);
+  if (Number.isNaN(v) || !S.model) return;
+  S.playing = false;
+  updatePlayButton();
+  S.t = clamp(v, 0, sceneDur());
+  ensurePlayheadVisible();
+  updatePlayhead();
+});
+$('#t-dur').addEventListener('input', (e) => {
+  const v = parseFloat(e.target.value);
+  if (Number.isNaN(v) || v < 1 || !S.model) return;
+  change(() => setDuration(v, { keepTimes: true }), { render: 'light' });
+});
+$('#t-dur').addEventListener('change', () => S.mode2 !== 'editor' && renderInspector()); // the Timing panel shows it too
+for (const input of [$('#t-now'), $('#t-dur')]) {
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === 'Escape') input.blur();
+  });
 }
 
 function updatePlayButton() {

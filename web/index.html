@@ -49,7 +49,12 @@
     <div class="transport">
       <button class="icon" id="play" title="Play / pause (Space)">▶</button>
       <button class="icon" id="rewind" title="Back to start">⏮</button>
-      <span class="time" id="time"></span>
+      <div class="time" id="time">
+        <input id="t-now" type="number" min="0" step="10" title="Playhead time – type to jump" aria-label="Playhead time in ms">
+        <span>/</span>
+        <input id="t-dur" type="number" min="1" step="10" aria-label="Duration in ms">
+        <span>ms</span>
+      </div>
       <label class="check"><input type="checkbox" id="loop" checked> Loop</label>
       <select id="speed" title="Speed">
         <option value="0.1">0.1×</option>
