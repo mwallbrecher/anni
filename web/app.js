@@ -936,6 +936,97 @@ function deleteSelected() {
   });
 }
 
+/* ---------- copy / paste keyframes ---------- */
+
+/** The selected keyframe as CSS – what lands on the system clipboard, so it can be pasted anywhere. */
+function keyframeCss(block, offset) {
+  return `${fmtPct(offset)} {\n${block.decls.filter((d) => d.prop).map((d) => `  ${d.prop}: ${d.value}${d.important ? ' !important' : ''};`).join('\n')}\n}`;
+}
+
+/** Declarations from clipboard text: a keyframe block (`50% { … }`) or bare `prop: value;` lines. Null if it isn't CSS. */
+function parseDecls(text) {
+  if (!text) return null;
+  const body = text.includes('{') ? text.slice(text.indexOf('{') + 1, text.lastIndexOf('}') > text.indexOf('{') ? text.lastIndexOf('}') : undefined) : text;
+  const decls = [];
+  for (const part of splitTop(body, ';')) {
+    const i = part.indexOf(':');
+    if (i < 1) continue;
+    const prop = part.slice(0, i).trim().toLowerCase();
+    let value = part.slice(i + 1).trim();
+    if (!/^-?[a-z][a-z0-9-]*$/.test(prop) || !value) return null;
+    const important = /!important$/i.test(value);
+    if (important) value = value.replace(/\s*!important$/i, '');
+    decls.push({ prop, value, ...(important ? { important: true } : {}) });
+  }
+  return decls.length ? decls : null;
+}
+
+function copySelected({ cut = false } = {}) {
+  if (!S.sel) return null;
+  const block = anim().keyframes[S.sel.bi];
+  const offset = block.offsets[S.sel.oi];
+  S.clip = { decls: block.decls.filter((d) => d.prop).map((d) => ({ ...d })), from: `${S.name} ${fmtPct(offset)}` };
+  S.clip.css = keyframeCss(block, offset);
+  if (cut) deleteSelected();
+  else renderInspector();
+  toast(`${cut ? 'Cut' : 'Copied'} keyframe ${S.clip.from} · ${S.clip.decls.length} value${S.clip.decls.length === 1 ? '' : 's'}`);
+  return S.clip.css;
+}
+
+/**
+ * Pastes declarations at the playhead: into the keyframe there (values overwrite, others stay), or as a new
+ * keyframe. A keyframe shared with other offsets (`0%, 100% {}`) is split first so only this one changes.
+ */
+function pasteAtPlayhead(decls = S.clip?.decls) {
+  if (!decls?.length) return toast('Nothing to paste – select a keyframe and copy it first');
+  const a = anim();
+  const p = playheadPct();
+  let at = blockAtPlayhead();
+  change(() => {
+    if (at && at.block.offsets.length > 1) {
+      at.block.offsets.splice(at.oi, 1);
+      a.keyframes.push({ offsets: [p], decls: at.block.decls.map((d) => ({ ...d })) });
+      at = { bi: a.keyframes.length - 1, oi: 0, block: a.keyframes[a.keyframes.length - 1] };
+    }
+    if (!at) {
+      a.keyframes.push({ offsets: [p], decls: [] });
+      at = { bi: a.keyframes.length - 1, oi: 0, block: a.keyframes[a.keyframes.length - 1] };
+    }
+    for (const d of decls) {
+      const cur = at.block.decls.find((x) => x.prop === d.prop);
+      if (cur) Object.assign(cur, { value: d.value, important: d.important });
+      else at.block.decls.push({ ...d });
+    }
+  });
+  select(at.bi, at.oi, { seek: false });
+  toast(`Pasted ${decls.length} value${decls.length === 1 ? '' : 's'} at ${fmtPct(p)}${playheadInRange() ? '' : ' (playhead was outside this animation)'}`);
+}
+
+/** Native clipboard events, so ⌘C / ⌘X / ⌘V work and the CSS text also goes to other apps. */
+const keyframeClipboardActive = (e) =>
+  S.model && !S.schema && S.mode2 !== 'editor' && !e.target.closest?.('input, select, textarea') && !String(getSelection?.() || '');
+document.addEventListener('copy', (e) => {
+  if (!keyframeClipboardActive(e) || !S.sel) return;
+  e.preventDefault();
+  e.clipboardData.setData('text/plain', copySelected());
+});
+document.addEventListener('cut', (e) => {
+  if (!keyframeClipboardActive(e) || !S.sel) return;
+  e.preventDefault();
+  e.clipboardData.setData('text/plain', copySelected({ cut: true }));
+});
+let pastePending = false;
+document.addEventListener('paste', (e) => {
+  pastePending = false;
+  if (!keyframeClipboardActive(e)) return;
+  const text = e.clipboardData.getData('text/plain');
+  // Our own copy pastes exactly; anything else is parsed as CSS (a keyframe block or declarations).
+  const decls = S.clip && text === S.clip.css ? S.clip.decls : parseDecls(text) || (!text ? S.clip?.decls : null);
+  if (!decls) return;
+  e.preventDefault();
+  pasteAtPlayhead(decls);
+});
+
 function splitSelected() {
   const a = anim();
   const { bi, oi } = S.sel;
@@ -1466,7 +1557,8 @@ function renderKeyframeSection(a) {
       'div',
       { class: 'section', id: 'kf-section' },
       h('h2', {}, 'Keyframe'),
-      h('p', { class: 'empty-inspector' }, 'Changing a value above keys it at the playhead. Keyframes in the timeline: click = select, drag = move, double-click a track = new keyframe.'),
+      h('p', { class: 'empty-inspector' }, 'Changing a value above keys it at the playhead. Keyframes in the timeline: click = select, drag = move (⌥ = duplicate), double-click a track = new keyframe, ⌘C / ⌘V = copy and paste at the playhead.'),
+      S.clip ? h('div', { class: 'row', style: 'margin-top:10px' }, h('span', { class: 'muted note', style: 'margin:0' }, `Clipboard: ${S.clip.from}`), h('span', { class: 'spacer' }), h('button', { onclick: () => pasteAtPlayhead() }, 'Paste at playhead')) : null,
     );
   }
   const { bi, oi } = S.sel;
@@ -1502,7 +1594,14 @@ function renderKeyframeSection(a) {
       ? h('p', { class: 'shared' }, `Shared block with ${others.map(fmtPct).join(', ')} – values apply to all. `, h('button', { onclick: splitSelected }, 'Split'))
       : null,
     h('p', { class: 'note', style: 'margin:0 0 10px' }, ...(keyed.length ? ['Sets: ', ...keyed.flatMap((p, i) => [i ? ', ' : '', h('code', {}, p)])] : ['Sets no property yet.'])),
-    h('div', { class: 'row' }, h('span', { class: 'spacer' }), h('button', { class: 'danger', onclick: deleteSelected }, 'Delete keyframe')),
+    h(
+      'div',
+      { class: 'row' },
+      h('button', { title: 'Copy this keyframe with its values (⌘C)', onclick: () => navigator.clipboard?.writeText(copySelected()).catch(() => {}) }, 'Copy'),
+      h('button', { title: S.clip ? `Paste ${S.clip.from} at the playhead (⌘V)` : 'Copy a keyframe first', disabled: !S.clip, onclick: () => pasteAtPlayhead() }, 'Paste'),
+      h('span', { class: 'spacer' }),
+      h('button', { class: 'danger', onclick: deleteSelected }, 'Delete keyframe'),
+    ),
   );
 }
 
@@ -1839,12 +1938,21 @@ function startDrag(e, g, bi, oi) {
   if (g.name !== S.name) setAnimation(g.name);
   select(bi, oi, { at: g.delay + (anim().keyframes[bi].offsets[oi] / 100) * g.duration });
   const x0 = e.clientX;
+  const duplicate = e.altKey; // ⌥-drag leaves a copy behind, like in a design tool
   let moved = false;
   followPointer((ev) => {
     if (!moved && Math.abs(ev.clientX - x0) < 3) return;
     if (!moved) {
       moved = true;
       commit();
+      if (duplicate) {
+        // The original stays where it is; a single-offset copy of it is what moves.
+        const src = anim().keyframes[bi];
+        anim().keyframes.push({ offsets: [src.offsets[oi]], decls: src.decls.map((d) => ({ ...d })) });
+        bi = anim().keyframes.length - 1;
+        oi = 0;
+        S.sel = { bi, oi };
+      }
     }
     const block = anim().keyframes[bi];
     const o = toOffset(g, laneX(ev, rect, true), ev.shiftKey);
@@ -2033,7 +2141,7 @@ addEventListener('keydown', (e) => {
     e.preventDefault();
     return saveNow();
   }
-  const typing = e.target.matches('input, select, textarea');
+  const typing = !!e.target.matches?.('input, select, textarea');
   if (S.schema) {
     if (mod && !typing && (e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'y')) {
       e.preventDefault();
@@ -2055,6 +2163,27 @@ addEventListener('keydown', (e) => {
     return setView(editing ? 'animate' : 'editor');
   }
   if (typing) return;
+  // Keyframe clipboard. ⌘C/⌘X write the CSS themselves (some browsers fire no copy event without a text
+  // selection); ⌘V lets the native paste event through – it carries external CSS – and falls back to the
+  // internal clipboard when the browser sends none.
+  if (mod && !editing && !String(getSelection?.() || '')) {
+    const k = e.key.toLowerCase();
+    if ((k === 'c' || k === 'x') && S.sel) {
+      e.preventDefault();
+      const css = copySelected({ cut: k === 'x' });
+      navigator.clipboard?.writeText(css).catch(() => {});
+      return;
+    }
+    if (k === 'v') {
+      pastePending = true;
+      setTimeout(() => {
+        if (!pastePending) return;
+        pastePending = false;
+        pasteAtPlayhead();
+      }, 60);
+      return;
+    }
+  }
   if (e.key === ' ') {
     e.preventDefault();
     if (e.target instanceof HTMLButtonElement) e.target.blur(); // Space must not also re-trigger a focused button
