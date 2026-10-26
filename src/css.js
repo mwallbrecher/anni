@@ -212,6 +212,13 @@ export function modelFromText(text, kind, file = kind === 'html' ? 'page.html' :
   return { file, kind, animations };
 }
 
+/** One list line for an animation of a model. A duration the rule doesn't set itself is not reported as 0 ms. */
+export function usageLine(a) {
+  if (!a.usage) return `- ${a.name} (not used by any rule)`;
+  const duration = a.usage.missing?.includes('duration') ? 'duration set outside this rule' : `${a.timing.duration}ms`;
+  return `- ${a.name} (used by ${a.usage.selector}, ${duration})`;
+}
+
 /** JSON model of all animations in the file. */
 export function loadModel(file) {
   return modelFromText(fs.readFileSync(file, 'utf8'), kindOf(file), file);

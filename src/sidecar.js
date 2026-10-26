@@ -8,7 +8,7 @@ import path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { describe, loadModel } from './css.js';
+import { describe, loadModel, usageLine } from './css.js';
 import { openBrowser } from './server.js';
 import { WAIT_DESCRIPTION, waitSeconds } from './wait.js';
 
@@ -20,19 +20,44 @@ let lastSession = null;
 const text = (t) => ({ content: [{ type: 'text', text: t }] });
 const fail = (e) => ({ ...text(`Error: ${e.message}`), isError: true });
 
+// MCP clients drop a request after 60 s. A wait asks anni for at most WAIT_MAX_S (50 s), so 55 s leaves room for the
+// round trip; if anni.run still hasn't answered, the call ends here instead of the client killing it.
+const API_TIMEOUT_MS = 55_000;
+
+class ApiTimeout extends Error {}
+
 async function api(method, route, body) {
   let res;
+  let data;
   try {
     const headers = { 'Content-Type': 'application/json' };
     if (process.env.ANNI_TOKEN) headers.Authorization = `Bearer ${process.env.ANNI_TOKEN}`; // private instances
-    res = await fetch(ANNI_URL + route, { method, headers, body: body && JSON.stringify(body) });
+    const signal = AbortSignal.timeout(API_TIMEOUT_MS);
+    res = await fetch(ANNI_URL + route, { method, headers, body: body && JSON.stringify(body), signal });
+    data = await res.json().catch((e) => {
+      if (e.name === 'TimeoutError') throw e; // the body can run out of time too
+      return {};
+    });
   } catch (e) {
+    if (e.name === 'TimeoutError') throw new ApiTimeout(`anni at ${ANNI_URL} did not answer within ${API_TIMEOUT_MS / 1000} s`);
     throw new Error(`Cannot reach anni at ${ANNI_URL}: ${e.cause?.code || e.message}`);
   }
-  const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
   return data;
 }
+
+/** Long-polls a session for a save. A slow anni counts as "nothing saved yet", so callers simply wait again. */
+async function waitApi(session, rev, seconds) {
+  try {
+    return await api('GET', `/api/sessions/${session}/wait?since=${rev}&timeout=${waitSeconds(seconds) * 1000}`);
+  } catch (e) {
+    if (e instanceof ApiTimeout) return { saved: false, late: true };
+    throw e;
+  }
+}
+
+const noSaveYet = (r, again) =>
+  `No save yet (${r.late ? 'anni answered late' : 'timeout'}). ${r.late ? '' : `The editor ${r.dirty ? 'has unsaved edits' : 'has no pending edits'}. `}Call ${again} again to keep waiting.`;
 
 /** Looks next to (and one level above) a CSS file for an HTML page that links it. */
 function findPreviewFor(file) {
@@ -132,38 +157,72 @@ server.registerTool(
       session: z.string().optional().describe('Existing session id to reuse (the open tab switches to the new content).'),
     },
   },
-  async ({ file, animation, preview, extra_files = [], session }) => {
+  async (args) => {
     try {
-      const abs = path.resolve(file);
-      if (!fs.existsSync(abs)) throw new Error(`File not found: ${abs}`);
-      const prev = /\.html?$/i.test(abs) ? abs : preview ? path.resolve(preview) : findPreviewFor(abs);
-      const b = bundle([abs, ...(prev ? [prev, ...linkedAssets(prev)] : []), ...extra_files]);
-      const { files, rel } = b;
-      const r = await api('POST', '/api/sessions', { files, file: rel(abs), animation, preview: prev ? rel(prev) : undefined, session });
-      const local = Object.fromEntries(b.abs.map((p) => [rel(p), p]));
-      const uploaded = Object.fromEntries(files.filter((f) => !f.encoding).map((f) => [f.path, f.content]));
-      sessions.set(r.session, { file: abs, rel: rel(abs), uploaded, local, rev: r.rev });
-      lastSession = r.session;
-      if (!r.clients && !process.env.ANNI_NO_BROWSER) openBrowser(r.url);
-      const list = r.animations.map((a) => `- ${a.name}${a.usage ? ` (used by ${a.usage.selector}, ${a.timing.duration}ms)` : ' (not used by any rule)'}`).join('\n');
-      return text(
-        [
-          `Opened "${r.animation}" from ${abs} in anni: ${r.url}`,
-          r.clients ? 'The editor tab that was already open switched to it.' : 'Opened a new browser tab (share the link if it did not appear).',
-          `Preview: ${prev ?? 'demo box (no HTML page found)'} · uploaded ${files.length} file${files.length > 1 ? 's' : ''}${r.skipped?.length ? ` · skipped (too large): ${r.skipped.join(', ')}` : ''}`,
-          `Session: ${r.session}`,
-          '',
-          'Animations in this file:',
-          list,
-          '',
-          'Next: call wait_for_save. It writes the edited file to disk when the user saves and returns the diff.',
-        ].join('\n'),
-      );
+      const { lines } = await openAnimation(args);
+      return text([...lines, '', 'Next: call wait_for_save. It writes the edited file to disk when the user saves and returns the diff.'].join('\n'));
     } catch (e) {
       return fail(e);
     }
   },
 );
+
+/** Uploads a file (plus its preview page and what that links) to anni and opens the editor. Shared by the tool and `anni-mcp open`. */
+async function openAnimation({ file, animation, preview, extra_files = [], session }) {
+  const abs = path.resolve(file);
+  if (!fs.existsSync(abs)) throw new Error(`File not found: ${abs}`);
+  const prev = /\.html?$/i.test(abs) ? abs : preview ? path.resolve(preview) : findPreviewFor(abs);
+  const b = bundle([abs, ...(prev ? [prev, ...linkedAssets(prev)] : []), ...extra_files]);
+  const { files, rel } = b;
+  const r = await api('POST', '/api/sessions', { files, file: rel(abs), animation, preview: prev ? rel(prev) : undefined, session });
+  const local = Object.fromEntries(b.abs.map((p) => [rel(p), p]));
+  const uploaded = Object.fromEntries(files.filter((f) => !f.encoding).map((f) => [f.path, f.content]));
+  sessions.set(r.session, { file: abs, rel: rel(abs), uploaded, local, rev: r.rev });
+  lastSession = r.session;
+  const browser = !r.clients && !process.env.ANNI_NO_BROWSER;
+  if (browser) openBrowser(r.url);
+  const lines = [
+    `Opened "${r.animation}" from ${abs} in anni: ${r.url}`,
+    r.clients ? 'The editor tab that was already open switched to it.' : browser ? 'Opened a new browser tab (share the link if it did not appear).' : 'No browser tab opened (ANNI_NO_BROWSER) – open the link.',
+    `Preview: ${prev ?? 'demo box (no HTML page found)'} · uploaded ${files.length} file${files.length > 1 ? 's' : ''}${r.skipped?.length ? ` · skipped (too large): ${r.skipped.join(', ')}` : ''}`,
+    `Session: ${r.session}`,
+    '',
+    'Animations in this file:',
+    r.animations.map(usageLine).join('\n'),
+  ];
+  return { r, lines };
+}
+
+/** One long-poll for a save in an animation session; on save writes the changed files to disk. Returns { saved, text }. */
+async function waitForSave(session, seconds, again = 'wait_for_save') {
+  const s = session && sessions.get(session);
+  if (!s) throw new Error(session ? `Unknown session "${session}" (sessions are tracked per sidecar process)` : 'No session open – call open_animation first');
+  const r = await waitApi(session, s.rev, seconds);
+  if (!r.saved) return { saved: false, text: noSaveYet(r, again) };
+  s.rev = r.rev;
+  // Every uploaded file anni changed (the animation file, and stylesheets edited in the Editor view) comes back whole.
+  const out = [`Saved revision ${r.rev}.`];
+  for (const f of r.files || [{ path: s.rel, content: r.content }]) {
+    const abs = s.local[f.path];
+    const was = s.uploaded[f.path];
+    if (!abs || was === undefined) {
+      out.push('', `${f.path}: changed in anni but not tracked locally – full content:`, f.content);
+      continue;
+    }
+    const diff = unifiedDiff(was, f.content, f.path);
+    if (fs.readFileSync(abs, 'utf8') !== was) {
+      out.push('', `${abs} changed on disk since it was uploaded, so it was NOT overwritten. Apply this diff yourself:`, diff);
+      continue;
+    }
+    fs.writeFileSync(abs, f.content);
+    s.uploaded[f.path] = f.content;
+    out.push('', `Written to ${abs}:`, diff);
+  }
+  const manual = (r.changes || []).filter((c) => !c.applied);
+  if (manual.length) out.push('', 'Edits anni could not place in the uploaded files – apply these yourself:', JSON.stringify(manual.map(({ id, label, from, to, source, reason }) => ({ id, label, from, to, source, reason })), null, 2));
+  out.push('', 'Current animations:', r.state);
+  return { saved: true, text: out.join('\n') };
+}
 
 server.registerTool(
   'wait_for_save',
@@ -179,33 +238,7 @@ server.registerTool(
   },
   async ({ session = lastSession, timeout_seconds }) => {
     try {
-      const s = session && sessions.get(session);
-      if (!s) throw new Error(session ? `Unknown session "${session}" (sessions are tracked per sidecar process)` : 'No session open – call open_animation first');
-      const r = await api('GET', `/api/sessions/${session}/wait?since=${s.rev}&timeout=${waitSeconds(timeout_seconds) * 1000}`);
-      if (!r.saved) return text(`No save yet (timeout). The editor ${r.dirty ? 'has unsaved edits' : 'has no pending edits'}. Call wait_for_save again to keep waiting.`);
-      s.rev = r.rev;
-      // Every uploaded file anni changed (the animation file, and stylesheets edited in the Editor view) comes back whole.
-      const out = [`Saved revision ${r.rev}.`];
-      for (const f of r.files || [{ path: s.rel, content: r.content }]) {
-        const abs = s.local[f.path];
-        const was = s.uploaded[f.path];
-        if (!abs || was === undefined) {
-          out.push('', `${f.path}: changed in anni but not tracked locally – full content:`, f.content);
-          continue;
-        }
-        const diff = unifiedDiff(was, f.content, f.path);
-        if (fs.readFileSync(abs, 'utf8') !== was) {
-          out.push('', `${abs} changed on disk since it was uploaded, so it was NOT overwritten. Apply this diff yourself:`, diff);
-          continue;
-        }
-        fs.writeFileSync(abs, f.content);
-        s.uploaded[f.path] = f.content;
-        out.push('', `Written to ${abs}:`, diff);
-      }
-      const manual = (r.changes || []).filter((c) => !c.applied);
-      if (manual.length) out.push('', 'Edits anni could not place in the uploaded files – apply these yourself:', JSON.stringify(manual.map(({ id, label, from, to, source, reason }) => ({ id, label, from, to, source, reason })), null, 2));
-      out.push('', 'Current animations:', r.state);
-      return text(out.join('\n'));
+      return text((await waitForSave(session, timeout_seconds)).text);
     } catch (e) {
       return fail(e);
     }
@@ -469,8 +502,8 @@ server.registerTool(
     try {
       const s = session && sessions.get(session);
       if (!s) throw new Error(session ? `Unknown session "${session}" (sessions are tracked per sidecar process)` : 'No session open – call present first');
-      const r = await api('GET', `/api/sessions/${session}/wait?since=${s.rev}&timeout=${waitSeconds(timeout_seconds) * 1000}`);
-      if (!r.saved) return text(`No save yet (timeout). The editor ${r.dirty ? 'has unsaved edits' : 'has no pending edits'}. Call wait_for_changes again to keep waiting.`);
+      const r = await waitApi(session, s.rev, timeout_seconds);
+      if (!r.saved) return text(noSaveYet(r, 'wait_for_changes'));
       if (r.kind !== 'schema') throw new Error('This session is an animation session – use wait_for_save');
       s.rev = r.rev;
       const out = [`Saved revision ${r.rev} – ${r.changes.length} change${r.changes.length === 1 ? '' : 's'}.`];
@@ -529,5 +562,42 @@ server.registerTool(
   },
 );
 
-console.error(`anni sidecar → ${ANNI_URL}`);
-await server.connect(new StdioServerTransport());
+const USAGE = `anni-mcp – sidecar for the hosted anni editor (${ANNI_URL})
+
+  anni-mcp                          run as an MCP server over stdio (what \`claude mcp add anni -- npx -y anni-mcp\` starts)
+  anni-mcp open <file> [animation]  open a .css/.html file in anni without an agent, write saves back until Ctrl+C
+
+Same upload, editor and write-back as the MCP tools – use \`open\` when the anni tools are not loaded yet
+(an MCP server added mid-session only loads in a new session). ANNI_URL / ANNI_TOKEN select a self-hosted instance.`;
+
+/** `anni-mcp open`: the open_animation + wait_for_save loop, for a terminal or an agent without the tools. */
+async function runOpen(file, animation) {
+  const { lines } = await openAnimation({ file, animation });
+  console.log([...lines, '', `Waiting for saves – they are written back to ${path.resolve(file)}. Ctrl+C to stop.`].join('\n'));
+  for (;;) {
+    try {
+      const r = await waitForSave(lastSession);
+      if (r.saved) console.log(`\n${r.text}`);
+    } catch (e) {
+      console.error(`${e.message} – retrying in 5 s`);
+      await new Promise((done) => setTimeout(done, 5000));
+    }
+  }
+}
+
+const [command, ...rest] = process.argv.slice(2);
+if (!command) {
+  console.error(`anni sidecar → ${ANNI_URL}`);
+  await server.connect(new StdioServerTransport());
+} else if (command === 'open' && rest[0]) {
+  try {
+    await runOpen(rest[0], rest[1]);
+  } catch (e) {
+    console.error(`Error: ${e.message}`);
+    process.exit(1);
+  }
+} else {
+  const help = ['help', '--help', '-h'].includes(command);
+  (help ? console.log : console.error)(USAGE);
+  process.exit(help ? 0 : 1);
+}

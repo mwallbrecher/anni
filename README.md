@@ -7,28 +7,8 @@ animations that already live in your project, on your own page.
 
 ## Setup
 
-```bash
-npm install
-claude mcp add --scope user anni -- node /path/to/anni/src/mcp.js
-```
-
-Then, in Claude Code: *“open the bounce animation from styles.css in anni”*.
-
-Without an agent: `node src/cli.js examples/demo.css`
-
-## MCP tools (local)
-
-| Tool | Purpose |
-| --- | --- |
-| `open_animation(file, animation?, preview?)` | Opens a `.css` or `.html` (with `<style>`) in the editor. Reuses the open tab if there is one, otherwise opens a new one. |
-| `get_animation_state()` | Returns the current animation as CSS – including unsaved edits. |
-| `list_animations(file)` | Lists every `@keyframes` in a file with its timing. |
-
-## Hosted anni (connect any agent, nothing to install)
-
-The same editor runs on Cloudflare Workers; the public instance is **https://anni.run**. Two ways to connect:
-
-**Recommended – the sidecar** ([`anni-mcp`](https://www.npmjs.com/package/anni-mcp) on npm, a tiny local MCP process):
+The editor runs on **https://anni.run**. Connect your agent through the sidecar
+([`anni-mcp`](https://www.npmjs.com/package/anni-mcp) on npm, a tiny local MCP process):
 
 ```bash
 claude mcp add anni -- npx -y anni-mcp
@@ -41,7 +21,23 @@ command = "npx"
 args = ["-y", "anni-mcp"]
 ```
 
-To run the newest code from this repository instead of the last npm release: `npx -y github:mwallbrecher/anni`.
+Then, in Claude Code: *“open the bounce animation from styles.css in anni”*.
+
+**Tools not loaded yet?** An MCP server added during a session only loads in the next one. Until then, run the same
+sidecar as a command – same upload, same editor on anni.run, saves written back to the file until Ctrl+C:
+
+```bash
+npx -y anni-mcp open styles.css [animation]
+```
+
+Don't use the `anni` command for this: that is [local mode](#local-mode-offline), a separate editor on 127.0.0.1.
+
+**Where updates land.** The editor UI is served by anni.run and ships with the Worker (`npm run deploy`): editor
+fixes are live for everyone as soon as it deploys – no npm release needed. An npm release only updates the sidecar:
+file upload, write-back, and the summaries it prints itself (`open_animation`'s animation list, `list_animations`),
+which parse CSS locally with `src/css.js`.
+
+To run the newest sidecar code from this repository instead of the last npm release: `npx -y github:mwallbrecher/anni`.
 From a checkout: `claude mcp add anni -- node /path/to/anni/src/sidecar.js`.
 
 The model only passes **file paths**; the sidecar reads and uploads the files to anni.run itself (plus the
@@ -52,7 +48,8 @@ Tools: `open_animation(file, animation?, preview?, extra_files?, session?)`, `wa
 `get_animation_state(session?)`, `list_animations(file)`, plus `present` / `wait_for_changes` (below) and
 `snapshot_page(url)`, which fetches a route of a *running* app – dev server, staging, anything – into static files
 (page, stylesheets, fonts, images; scripts stripped) so the preview is the real page. `ANNI_URL` points the sidecar at a
-self-hosted instance.
+self-hosted instance. Each wait ends after at most 50 s and every call to anni.run is capped at 55 s, so a call never
+outlives an MCP client's 60 s limit – a slow answer comes back as "no save yet" and the agent waits again.
 
 **Zero-install – the remote MCP endpoint** (Streamable HTTP), for clients that can't run a local process:
 
@@ -119,6 +116,24 @@ Edit the `production` block in `wrangler.jsonc`:
 
 Everything is one Durable Object per session (files, live model, open tabs, waiting agents); it fits the free plan.
 
+## Local mode (offline)
+
+anni can also run entirely on your machine, without anni.run. It serves the editor **bundled in the installed package
+version** – it does not get anni.run deploys – on `http://127.0.0.1:4747` (`ANNI_PORT` to change it). Both entry
+points print a "local mode" banner so it can't be mistaken for the hosted editor.
+
+```bash
+npm install
+claude mcp add --scope user anni -- node /path/to/anni/src/mcp.js   # or: npx -y -p anni-mcp anni-mcp-local
+node src/cli.js examples/demo.css                                    # without an agent (the `anni` command)
+```
+
+| Tool | Purpose |
+| --- | --- |
+| `open_animation(file, animation?, preview?)` | Opens a `.css` or `.html` (with `<style>`) in the editor. Reuses the open tab if there is one, otherwise opens a new one. |
+| `get_animation_state()` | Returns the current animation as CSS – including unsaved edits. |
+| `list_animations(file)` | Lists every `@keyframes` in a file with its timing. |
+
 ## Editor
 
 - **Preview**: for a `.css` file anni looks for an `.html` next to it that links it (or pass `preview`). If the animation doesn't run there (e.g. only on `:hover`), there's a **demo box**.
@@ -135,4 +150,3 @@ Everything is one Durable Object per session (files, live model, open tabs, wait
 - If the agent changes the file, anni reloads it automatically (and asks first when you have unsaved edits).
 
 Only what changed is written – the rest of the file stays untouched.
-The server runs on `http://127.0.0.1:4747` (`ANNI_PORT` to change it).

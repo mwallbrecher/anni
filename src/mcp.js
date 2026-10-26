@@ -5,9 +5,9 @@ import path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { describe, loadModel } from './css.js';
+import { describe, loadModel, usageLine } from './css.js';
 import { call, ensureServer } from './client.js';
-import { BASE_URL, openBrowser } from './server.js';
+import { BASE_URL, LOCAL_MODE_NOTE, openBrowser } from './server.js';
 
 const server = new McpServer({ name: 'anni', version: '0.1.0' });
 
@@ -40,9 +40,7 @@ server.registerTool(
         preview: preview && path.resolve(preview),
       });
       if (!r.clients) openBrowser(r.url);
-      const list = r.animations
-        .map((a) => `- ${a.name}${a.usage ? ` (used by ${a.usage.selector}, ${a.timing.duration}ms)` : ' (not used by any rule)'}`)
-        .join('\n');
+      const list = r.animations.map(usageLine).join('\n');
       return text(
         [
           `Opened "${r.animation}" from ${r.file} in anni: ${r.url}`,
@@ -95,7 +93,7 @@ server.registerTool(
 
 // Host the editor right away so http://127.0.0.1:4747 is up while the agent runs.
 ensureServer()
-  .then((hosting) => console.error(hosting ? `anni editor on ${BASE_URL}` : `anni editor already running on ${BASE_URL}`))
+  .then((hosting) => console.error(`${LOCAL_MODE_NOTE}\n${hosting ? `anni editor on ${BASE_URL}` : `anni editor already running on ${BASE_URL}`}`))
   .catch((e) => console.error(`anni: ${e.message}`));
 
 await server.connect(new StdioServerTransport());

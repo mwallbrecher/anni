@@ -11,6 +11,12 @@ export const PORT = Number(process.env.ANNI_PORT) || 4747;
 export const BASE_URL = `http://127.0.0.1:${PORT}`;
 
 const WEB_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web');
+const VERSION = JSON.parse(fs.readFileSync(path.join(WEB_DIR, '..', 'package.json'), 'utf8')).version;
+
+// Local mode is easy to mistake for anni.run: say which editor this is, and how to reach the hosted one.
+export const LOCAL_MODE_NOTE =
+  `anni local mode: the editor bundled with anni-mcp ${VERSION}, served from this machine (not anni.run).\n` +
+  'Hosted editor (always current): npx -y anni-mcp open <file>';
 const STYLE_OPEN_RE = /(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi;
 const MIME = {
   '.html': 'text/html; charset=utf-8',
