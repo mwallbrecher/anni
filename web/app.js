@@ -361,8 +361,73 @@ frame.addEventListener('load', () => {
   setTimeout(checkPreview, 600);
 });
 
+/**
+ * Timing a rule leaves to others (a shared `.stage * { animation-duration: 4s }`, a utility class, a custom
+ * property) parses as CSS initial values – 0s, 1 iteration. The page knows the real ones: read them off an
+ * element running the animation and keep them as `timingBase`, so the editor shows the truth and saving
+ * writes only what the user actually changed.
+ */
+function resolveLiveTiming() {
+  const doc = frame.contentDocument;
+  if (!S.model || !doc?.getAnimations) return;
+  const wasClean = !S.dirty;
+  let changed = false;
+  for (const a of S.model.animations) {
+    const missing = a.usage?.missing;
+    if (!missing?.length || a.timingBase) continue;
+    const x = doc.getAnimations().find((y) => y.animationName === a.name && y.effect?.target);
+    if (!x) continue;
+    const cs = doc.defaultView.getComputedStyle(x.effect.target, x.effect.pseudoElement || null);
+    const names = splitTop(cs.animationName, ',');
+    const i = Math.max(0, names.indexOf(a.name));
+    const pick = (prop) => {
+      const list = splitTop(cs.getPropertyValue(prop), ',');
+      return list.length ? list[i % list.length].trim() : '';
+    };
+    const ms = (v) => (/ms$/i.test(v) ? parseFloat(v) : parseFloat(v) * 1000);
+    const live = {
+      duration: ms(pick('animation-duration')),
+      delay: ms(pick('animation-delay')),
+      easing: pick('animation-timing-function'),
+      iterations: pick('animation-iteration-count'),
+      direction: pick('animation-direction'),
+      fill: pick('animation-fill-mode'),
+    };
+    for (const k of missing) if (live[k] !== '' && !Number.isNaN(live[k])) a.timing[k] = typeof live[k] === 'number' ? Math.round(live[k]) : live[k];
+    a.timingBase = { ...a.timing };
+    changed = true;
+  }
+  if (!changed) return;
+  if (wasClean) {
+    S.saved = snapshot();
+    S.dirty = false;
+  }
+  renderAll();
+  push();
+}
+
+const TIMING_LABELS = { duration: 'duration', delay: 'delay', easing: 'easing', iterations: 'iterations', direction: 'direction', fill: 'fill mode' };
+
+/** Tells where timing comes from when the animation's own rule doesn't set it. */
+function timingSourceNote(a) {
+  const missing = a.usage?.missing;
+  if (!missing?.length) return null;
+  const list = missing.map((k) => TIMING_LABELS[k]).join(', ');
+  if (a.timingBase) {
+    return h('p', { class: 'note' }, `${list[0].toUpperCase()}${list.slice(1)} come${missing.length === 1 ? 's' : ''} from another rule on the page – shown as the page plays it. Changing ${missing.length === 1 ? 'it' : 'one'} writes it into `, h('code', {}, a.usage.selector), '.');
+  }
+  return h(
+    'p',
+    { class: 'note warn' },
+    `${list[0].toUpperCase()}${list.slice(1)} ${missing.length === 1 ? 'is' : 'are'} set outside `,
+    h('code', {}, a.usage.selector),
+    ' (a shared rule or a variable), and no element is running this animation right now – the values shown are CSS defaults, not what the page uses.',
+  );
+}
+
 function checkPreview() {
   if (!S.session || S.schema) return;
+  resolveLiveTiming();
   renderTimeline(); // the page's animated elements are known now
   if (S.mode !== 'page') return;
   const found = previewAnimations().length;
@@ -1192,6 +1257,7 @@ async function saveNow() {
         await pushNow(); // the edited stylesheet is swapped in before the panel re-reads the CSSOM
       }
       renderAll();
+      resolveLiveTiming(); // the fresh model from the server knows nothing about inherited timing
       return;
     }
     S.sel = null;
@@ -1200,7 +1266,8 @@ async function saveNow() {
       if (bi >= 0) S.sel = { bi, oi: anim().keyframes[bi].offsets.indexOf(selOffset) };
     }
     renderAll();
-    push();
+    await pushNow();
+    resolveLiveTiming(); // the fresh model from the server knows nothing about inherited timing
     toast(r.changed ? (S.session.hosted ? 'Saved – your agent can pull it now' : 'Saved to file') : 'No changes');
   } catch (e) {
     toast(`Error: ${e.message}`);
@@ -1580,6 +1647,7 @@ function renderInspector() {
     a.usage
       ? h('p', { class: 'note' }, 'Used by ', h('code', {}, a.usage.selector))
       : h('p', { class: 'note warn' }, 'No CSS rule uses this animation – timing only applies to the preview and is not saved.'),
+    timingSourceNote(a),
   );
 
   inspector.replaceChildren(...(S.el ? [renderElementSection()] : []), timing, renderPropsPanel(), renderKeyframeSection(a));

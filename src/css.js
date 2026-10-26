@@ -149,16 +149,27 @@ function analyze(roots) {
           if (!f || f.usage) return;
           const timing = { ...DEFAULT_TIMING };
           let unit = 's';
+          // Timing this rule doesn't set itself – a shared rule (`.stage * { animation-duration: 4s }`), a
+          // utility class, a custom property – stays at the CSS initial value here; the editor reads the real
+          // value off the running element and keeps it as the baseline (see `timingBase`).
+          const missing = [];
           for (const [key, prop] of Object.entries(LONGHANDS)) {
             const v = longhandValue(rule, prop, index);
-            if (v === null) continue;
+            if (v === null || /var\(|env\(/i.test(v)) {
+              missing.push(key);
+              continue;
+            }
             if (key === 'duration' || key === 'delay') {
               const t = parseTime(v);
+              if (Number.isNaN(t.ms)) {
+                missing.push(key);
+                continue;
+              }
               timing[key] = t.ms;
               if (key === 'duration') unit = t.unit;
             } else timing[key] = v;
           }
-          f.usage = { kind: 'longhand', src, rule, decl, index, timing, unit };
+          f.usage = { kind: 'longhand', src, rule, decl, index, timing, unit, missing };
         }
       });
     });
@@ -196,7 +207,7 @@ export function modelFromText(text, kind, file = kind === 'html' ? 'page.html' :
     name,
     keyframes: keyframesOf(f.at),
     timing: f.usage ? { ...f.usage.timing } : { ...DEFAULT_TIMING, duration: 1000, iterations: 'infinite' },
-    usage: f.usage ? { selector: f.usage.rule.selector, kind: f.usage.kind } : null,
+    usage: f.usage ? { selector: f.usage.rule.selector, kind: f.usage.kind, ...(f.usage.missing?.length ? { missing: f.usage.missing } : {}) } : null,
   }));
   return { file, kind, animations };
 }
@@ -230,7 +241,8 @@ function writeKeyframes(at, blocks) {
   }
 }
 
-function writeTiming(name, usage, timing) {
+/** Writes the timing keys that differ from `base` (what the file – or, for inherited values, the page – had). */
+function writeTiming(name, usage, timing, base = usage.timing) {
   if (usage.kind === 'shorthand') {
     const entries = splitTop(usage.decl.value, ',');
     entries[usage.index] = formatShorthandEntry(name, timing, usage.unit, usage.paused);
@@ -238,7 +250,7 @@ function writeTiming(name, usage, timing) {
     return;
   }
   for (const [key, prop] of Object.entries(LONGHANDS)) {
-    if (timing[key] === usage.timing[key]) continue;
+    if (timing[key] === base[key]) continue;
     const value = key === 'duration' || key === 'delay' ? fmtTime(timing[key], usage.unit) : timing[key];
     let decl = null;
     usage.rule.each((n) => {
@@ -315,7 +327,10 @@ export function renderText(text, kind, model, from = model.file) {
       continue;
     }
     if (normKeyframes(anim.keyframes) !== normKeyframes(keyframesOf(f.at))) writeKeyframes(f.at, anim.keyframes);
-    if (f.usage && timingChanged(anim.timing, f.usage.timing)) writeTiming(anim.name, f.usage, anim.timing);
+    // `timingBase` (set by the editor) holds the values the page really used, including ones inherited from
+    // other rules; only changes against it are written, so resolving them never adds declarations by itself.
+    const base = anim.timingBase || f.usage?.timing;
+    if (f.usage && timingChanged(anim.timing, base)) writeTiming(anim.name, f.usage, anim.timing, base);
   }
   return { ...parsed, css: parsed.roots.map((r) => r.toString()) };
 }
