@@ -346,7 +346,7 @@ body { display: grid !important; place-items: center !important; background: tra
       if (route === 'GET /internal/state') return json({ text: this.stateText(), dirty: this.dirty, hasSession: !!this.meta, rev: this.meta?.rev || 0 });
       if (route === 'GET /internal/wait') {
         const since = Number(url.searchParams.get('since') || 0);
-        const timeout = Math.min(Number(url.searchParams.get('timeout') || 60000), 5 * 60 * 1000);
+        const timeout = Math.min(Number(url.searchParams.get('timeout') || 45000), 55000); // MCP clients give up at 60 s
         return json(await this.waitForSave(since, timeout));
       }
 

@@ -4,6 +4,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { describe, kindOf, modelFromText } from '../src/css.js';
+import { WAIT_DESCRIPTION, waitSeconds } from '../src/wait.js';
 
 const text = (t) => ({ content: [{ type: 'text', text: t }] });
 const fail = (e) => ({ ...text(`Error: ${e.message}`), isError: true });
@@ -139,7 +140,7 @@ export function createServer(env, origin) {
       inputSchema: z.object({
         session: z.string().describe('Session id from open_animation'),
         since_rev: z.number().int().optional().describe('Only return a save newer than this revision (from a previous result). Defaults to the latest.'),
-        timeout_seconds: z.number().int().min(1).max(300).optional().describe('How long to wait (default 60)'),
+        timeout_seconds: z.number().int().min(1).optional().describe(WAIT_DESCRIPTION),
       }),
     },
     async ({ session, since_rev, timeout_seconds }) => {
@@ -147,7 +148,7 @@ export function createServer(env, origin) {
         const state = await call(env, session, '/internal/state');
         if (!state.hasSession) throw new Error(`Unknown session "${session}"`);
         const since = since_rev ?? state.rev;
-        const r = await call(env, session, `/internal/wait?since=${since}&timeout=${(timeout_seconds ?? 60) * 1000}`);
+        const r = await call(env, session, `/internal/wait?since=${since}&timeout=${waitSeconds(timeout_seconds) * 1000}`);
         if (!r.saved) return text(`No save yet (timeout). The editor ${r.dirty ? 'has unsaved edits' : 'has no pending edits'}. Call wait_for_save again to keep waiting.`);
         const files = r.files || [{ path: r.file, content: r.content }];
         const manual = (r.changes || []).filter((c) => !c.applied);
@@ -213,14 +214,14 @@ export function createServer(env, origin) {
       inputSchema: z.object({
         session: z.string().describe('Session id from present'),
         since_rev: z.number().int().optional(),
-        timeout_seconds: z.number().int().min(1).max(300).optional(),
+        timeout_seconds: z.number().int().min(1).optional().describe(WAIT_DESCRIPTION),
       }),
     },
     async ({ session, since_rev, timeout_seconds }) => {
       try {
         const state = await call(env, session, '/internal/state');
         if (!state.hasSession) throw new Error(`Unknown session "${session}"`);
-        const r = await call(env, session, `/internal/wait?since=${since_rev ?? state.rev}&timeout=${(timeout_seconds ?? 60) * 1000}`);
+        const r = await call(env, session, `/internal/wait?since=${since_rev ?? state.rev}&timeout=${waitSeconds(timeout_seconds) * 1000}`);
         if (!r.saved) return text(`No save yet (timeout). The editor ${r.dirty ? 'has unsaved edits' : 'has no pending edits'}. Call wait_for_changes again to keep waiting.`);
         if (r.kind !== 'schema') throw new Error('This session is an animation session – use wait_for_save');
         return text(`Saved revision ${r.rev}. Changes:\n${JSON.stringify(r.changes, null, 2)}\n\nAll values now:\n${JSON.stringify(r.values)}`);

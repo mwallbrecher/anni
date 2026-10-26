@@ -10,6 +10,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { describe, loadModel } from './css.js';
 import { openBrowser } from './server.js';
+import { WAIT_DESCRIPTION, waitSeconds } from './wait.js';
 
 const ANNI_URL = (process.env.ANNI_URL || 'https://anni.run').replace(/\/$/, '');
 const server = new McpServer({ name: 'anni', version: '0.2.0' });
@@ -173,14 +174,14 @@ server.registerTool(
       'you do not need to touch the file. Returns a timeout note if nothing was saved yet; call again while the user is still working.',
     inputSchema: {
       session: z.string().optional().describe('Session id from open_animation (defaults to the last opened one)'),
-      timeout_seconds: z.number().int().min(1).max(300).optional().describe('How long to wait (default 60)'),
+      timeout_seconds: z.number().int().min(1).optional().describe(WAIT_DESCRIPTION),
     },
   },
-  async ({ session = lastSession, timeout_seconds = 60 }) => {
+  async ({ session = lastSession, timeout_seconds }) => {
     try {
       const s = session && sessions.get(session);
       if (!s) throw new Error(session ? `Unknown session "${session}" (sessions are tracked per sidecar process)` : 'No session open – call open_animation first');
-      const r = await api('GET', `/api/sessions/${session}/wait?since=${s.rev}&timeout=${timeout_seconds * 1000}`);
+      const r = await api('GET', `/api/sessions/${session}/wait?since=${s.rev}&timeout=${waitSeconds(timeout_seconds) * 1000}`);
       if (!r.saved) return text(`No save yet (timeout). The editor ${r.dirty ? 'has unsaved edits' : 'has no pending edits'}. Call wait_for_save again to keep waiting.`);
       s.rev = r.rev;
       // Every uploaded file anni changed (the animation file, and stylesheets edited in the Editor view) comes back whole.
@@ -461,14 +462,14 @@ server.registerTool(
       'file and returns the diffs; changes without a source wire are listed for you to apply. Call again while the user keeps working.',
     inputSchema: {
       session: z.string().optional().describe('Session id from present (defaults to the last opened one)'),
-      timeout_seconds: z.number().int().min(1).max(300).optional(),
+      timeout_seconds: z.number().int().min(1).optional().describe(WAIT_DESCRIPTION),
     },
   },
-  async ({ session = lastSession, timeout_seconds = 60 }) => {
+  async ({ session = lastSession, timeout_seconds }) => {
     try {
       const s = session && sessions.get(session);
       if (!s) throw new Error(session ? `Unknown session "${session}" (sessions are tracked per sidecar process)` : 'No session open – call present first');
-      const r = await api('GET', `/api/sessions/${session}/wait?since=${s.rev}&timeout=${timeout_seconds * 1000}`);
+      const r = await api('GET', `/api/sessions/${session}/wait?since=${s.rev}&timeout=${waitSeconds(timeout_seconds) * 1000}`);
       if (!r.saved) return text(`No save yet (timeout). The editor ${r.dirty ? 'has unsaved edits' : 'has no pending edits'}. Call wait_for_changes again to keep waiting.`);
       if (r.kind !== 'schema') throw new Error('This session is an animation session – use wait_for_save');
       s.rev = r.rev;
