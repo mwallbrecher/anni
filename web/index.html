@@ -52,7 +52,7 @@
       <button class="icon" id="play" title="Play / pause (Space)">▶</button>
       <button class="icon" id="rewind" title="Back to start">⏮</button>
       <div class="time" id="time">
-        <input id="t-now" type="number" min="0" step="10" title="Playhead time – type to jump" aria-label="Playhead time in ms">
+        <input id="t-now" type="number" min="0" step="10" title="Playhead time – type to jump; with the playhead on selected keyframes, they move along" aria-label="Playhead time in ms">
         <span>/</span>
         <input id="t-dur" type="number" min="1" step="10" aria-label="Timeline length in ms">
         <span>ms</span>
@@ -67,7 +67,7 @@
       </select>
       <div class="spacer"></div>
       <button id="tl-zoom" class="readout" title="Timeline zoom: pinch or ⌘/Ctrl + wheel, Shift + wheel pans · click or press 0 to fit" hidden>1.0× · fit</button>
-      <span class="muted hint">Scrub in the ruler · drag on a track = select keyframes · drag a keyframe = move (first/last stretch the animation, Shift keeps the others' times) · double-click = new keyframe · ←/→ = 1 ms (Shift: 10 ms) · Alt+←/→ = next keyframe · pinch = zoom</span>
+      <span class="muted hint">Scrub in the ruler · drag on a track = select keyframes · drag a keyframe = move (snaps to the playhead; first/last stretch the animation, Shift keeps the others' times) · double-click = new keyframe · ←/→ = 1 ms (Shift: 10 ms) · Alt+←/→ = next keyframe · pinch = zoom</span>
       <button id="add-kf">+ Keyframe at playhead</button>
     </div>
     <div class="tracks" id="tracks"></div>

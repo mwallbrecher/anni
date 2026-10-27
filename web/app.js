@@ -1954,7 +1954,7 @@ function renderKeyframeSection(a) {
       'div',
       { class: 'section', id: 'kf-section' },
       h('h2', {}, 'Keyframe'),
-      h('p', { class: 'empty-inspector' }, 'Changing a value above keys it at the playhead. Keyframes in the timeline: click = select, drag on an empty track = select several (Shift adds), drag = move (the first or last keyframe stretches the animation, Shift keeps the other keyframes’ times, ⌥ = duplicate, ⌘ = 1 ms steps), double-click a track = new keyframe, ⌘C / ⌘V = copy and paste at the playhead. Scrub in the ruler.'),
+      h('p', { class: 'empty-inspector' }, 'Changing a value above keys it at the playhead. Keyframes in the timeline: click = select, drag on an empty track = select several (Shift adds), drag = move (snaps to the playhead; the first or last keyframe stretches the animation, Shift keeps the other keyframes’ times, ⌥ = duplicate, ⌘ = 1 ms steps), double-click a track = new keyframe, ⌘C / ⌘V = copy and paste at the playhead. Scrub in the ruler.'),
       S.clip ? h('div', { class: 'row', style: 'margin-top:10px' }, h('span', { class: 'muted note', style: 'margin:0' }, `Clipboard: ${S.clip.from}`), h('span', { class: 'spacer' }), h('button', { onclick: () => pasteAtPlayhead() }, 'Paste at playhead')) : null,
     );
   }
@@ -2472,6 +2472,9 @@ function startDrag(e, g, bi, oi) {
   const shiftPress = e.shiftKey; // click: toggle on release; drag: move keeping the other keyframes' times
   const at = (a) => g.delay + (a.keyframes[bi].offsets[oi] / 100) * g.duration;
   const multi = before.length > 1 && before.some((p) => pickKey(p) === key);
+  // The playhead stays where it is while dragging, and dragged keyframes snap to it. Only a click on a
+  // keyframe (no drag) moves the playhead there, on release.
+  const playT = S.t;
   const grab = () => {
     if (multi) {
       // Make the pressed keyframe the primary one without dropping the others.
@@ -2480,11 +2483,10 @@ function startDrag(e, g, bi, oi) {
         api('POST', '/api/select', { animation: g.name });
       }
       S.sel = { bi, oi };
-      S.t = at(anim());
       renderAll();
     } else {
       if (g.name !== S.name) setAnimation(g.name);
-      select(bi, oi, { at: at(anim()) });
+      select(bi, oi, { seek: false });
     }
   };
   if (!shiftPress) grab();
@@ -2521,22 +2523,27 @@ function startDrag(e, g, bi, oi) {
         }
         plan = planMove(picks(), g, { name: g.name, bi, oi });
       }
-      // Snap the pressed keyframe to 10 ms (⌘/Ctrl held: 1 ms); nothing may move before the page starts.
-      // Shift can be pressed or released mid-drag: the move is always recomputed from the start.
+      // Snap the pressed keyframe to the playhead when within 8 px of it, else to 10 ms (⌘/Ctrl held: 1 ms);
+      // nothing may move before the page starts. Shift can be pressed or released mid-drag: the move is
+      // always recomputed from the start.
+      const raw = plan.anchorT + pageTime(ev) - t0;
       const step = ev.metaKey || ev.ctrlKey ? 1 : 10;
-      const dt = Math.max(Math.round((plan.anchorT + pageTime(ev) - t0) / step) * step - plan.anchorT, -plan.earliest);
+      const snapMs = (8 / rect.width) * S.dragView.span;
+      const target = Math.abs(raw - playT) <= snapMs ? playT : Math.round(raw / step) * step;
+      const dt = Math.max(target - plan.anchorT, -plan.earliest);
       if (dt === plan.dt && ev.shiftKey === plan.keepTimes) return;
       plan.dt = dt;
       plan.keepTimes = ev.shiftKey;
       applyMove(plan, dt, ev.shiftKey);
-      S.t = plan.anchorT + dt;
-      afterChange();
+      afterChange(); // the time box turns orange when the keyframe lands on the playhead
     },
     () => {
       S.dragView = null;
-      if (moved) renderTimeline(); // back to the normal scale, now fitting the new scene length
-      else if (shiftPress) toggle();
-      else if (multi) select(bi, oi, { seek: false }); // a plain click in a selection narrows it to this keyframe
+      if (moved) return renderTimeline(); // back to the normal scale, now fitting the new scene length
+      if (shiftPress) return toggle();
+      if (multi) select(bi, oi, { seek: false }); // a plain click in a selection narrows it to this keyframe
+      S.t = at(anim()); // a click moves the playhead to the keyframe
+      renderTimeline();
     },
   );
 }
@@ -2793,13 +2800,33 @@ function updatePlayhead() {
   schedulePanel();
 }
 
-/* Time box: type a time to jump the playhead there; type a length for the timeline (never shorter than its animations). */
+/*
+ * Time box: type a time to jump the playhead there; type a length for the timeline (never shorter than its
+ * animations). When the playhead sits on the selected keyframe – selecting one puts it there – a new time
+ * moves the whole selection along with it, the same way a drag does.
+ */
+function moveSelectionTo(v) {
+  const list = picks();
+  const g = list.length && S.groups?.find((x) => x.anim && x.name === S.name);
+  if (!g) return false;
+  const anchor = { name: S.name, bi: S.sel.bi, oi: S.sel.oi };
+  const at = g.delay + (anim().keyframes[anchor.bi].offsets[anchor.oi] / 100) * g.duration;
+  if (Math.abs(S.t - at) > 0.5) return false;
+  change(() => {
+    const plan = planMove(list, g, anchor);
+    const dt = Math.max(v - plan.anchorT, -plan.earliest);
+    applyMove(plan, dt, false);
+    S.t = plan.anchorT + dt;
+  });
+  return true;
+}
+
 $('#t-now').addEventListener('change', (e) => {
   const v = parseFloat(e.target.value);
   if (Number.isNaN(v) || !S.model) return;
   S.playing = false;
   updatePlayButton();
-  S.t = clamp(v, 0, sceneDur());
+  if (!moveSelectionTo(Math.max(0, v))) S.t = clamp(v, 0, sceneDur());
   ensurePlayheadVisible();
   updatePlayhead();
 });
