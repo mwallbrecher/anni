@@ -333,7 +333,7 @@ function homeDemo() {
   const demo = h(
     'div',
     { class: 'demo' },
-    h('div', { class: 'demo-bar-wrap' }, h('div', { class: 'demo-bar' }, play, h('label', { class: 'check', title: 'Loop' }, loopBox, 'Loop'), h('span', { class: 'name' }, EXAMPLE_SESSION.file), h('span', { class: 'spacer' }), reset, undoBtn, redoBtn, time)),
+    h('div', { class: 'demo-bar-wrap' }, h('div', { class: 'demo-bar' }, homeWindowControls(), play, h('label', { class: 'check', title: 'Loop' }, loopBox, 'Loop'), h('span', { class: 'name' }, EXAMPLE_SESSION.file), h('span', { class: 'spacer' }), reset, undoBtn, redoBtn, time)),
     frame,
     h('aside', { class: 'demo-panel' }, panel),
     h('div', { class: 'demo-tl-wrap' }, tl),
@@ -573,6 +573,12 @@ function homeDemo() {
     home.raf = requestAnimationFrame(tick);
   });
   return demo;
+}
+
+/** A window's close / minimise / full-screen dots, as on a Mac – only for the look, they do nothing. */
+function homeWindowControls() {
+  const dot = (cls, glyph) => h('span', { class: cls }, h('span', {}, glyph));
+  return h('span', { class: 'win', 'aria-hidden': 'true' }, dot('win-close', '×'), dot('win-min', '−'), dot('win-full', '+'));
 }
 
 /** Whatever is typed, sending it opens the example – with the edits made in the demo – as a session of its own, owned by this browser. */
@@ -844,7 +850,7 @@ function homeInstall(agents, tokenRequired) {
     ),
   );
   set(agent, mode);
-  return h('section', { class: 'setup home-sec' }, h('div', { class: 'setup-head' }, h('h2', {}, 'Setup'), agentSeg), h('div', { class: 'install' }, modeSeg, line), hint);
+  return h('section', { class: 'setup home-sec late' }, h('div', { class: 'setup-head' }, h('h2', {}, 'Setup'), agentSeg), h('div', { class: 'install' }, modeSeg, line), hint);
 }
 
 /* ---------- access: lock screen, roles, requests, watching (hosted only) ---------- */

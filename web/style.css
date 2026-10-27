@@ -498,6 +498,14 @@ button.primary { color: var(--offwhite); }
 .demo-bar .name { color: var(--text); }
 .demo-bar button { height: 20px; padding: 0 6px; font-family: var(--display); font-size: 11px; color: var(--text); }
 .demo-play { width: 24px; }
+/* window dots, for the look only: grey, taking their colours (and glyphs) under the pointer, as on a Mac */
+.demo-bar .win { display: inline-flex; gap: 7px; margin-right: 6px; }
+.demo-bar .win > span { width: 12px; height: 12px; border-radius: 50%; background: var(--line-2); display: grid; place-items: center; transition: background 150ms; }
+.demo-bar .win span span { font: 600 10px/1 system-ui, sans-serif; color: rgba(0, 0, 0, 0.6); opacity: 0; }
+.demo-bar .win:hover span span { opacity: 1; }
+.demo-bar .win:hover .win-close { background: #ff5f57; }
+.demo-bar .win:hover .win-min { background: #febc2e; }
+.demo-bar .win:hover .win-full { background: #28c840; }
 .demo-bar .check { font-family: var(--display); font-size: 11px; cursor: pointer; }
 .demo-bar .demo-reset { color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
 .demo-time { width: 14ch; text-align: right; font-variant-numeric: tabular-nums; } /* fixed: the buttons beside it never move */
@@ -646,6 +654,7 @@ button.primary { color: var(--offwhite); }
 }
 @media (max-width: 560px) {
   .demo-frame { min-height: 220px; }
+  .demo-bar .name { display: none; } /* room for the buttons */
   .demo { --panel-w: 140px; }
   .demo-panel-in { padding: 10px 8px; }
   .demo-panel-in dl { grid-template-columns: 1fr; gap: 2px; }
