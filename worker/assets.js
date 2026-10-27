@@ -4,7 +4,7 @@
 // reaches every tab on its next load, whatever the browser cached before – and open tabs learn about it
 // from /api/version and the session's event stream (see checkVersion in web/app.js).
 
-const EDITOR_ASSETS = new Set(['/', '/index.html', '/app.js', '/props.js', '/aurora.js', '/style.css']);
+const EDITOR_ASSETS = new Set(['/', '/index.html', '/app.js', '/props.js', '/example.js', '/style.css']);
 export const isEditorAsset = (p) => EDITOR_ASSETS.has(p) || p.startsWith('/brand/') || p.startsWith('/fonts/');
 
 export const versionOf = (env) => env.CF_VERSION_METADATA?.id || 'dev';

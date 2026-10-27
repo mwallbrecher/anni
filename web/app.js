@@ -2,7 +2,7 @@
 // iframe (same origin), and drives the selected CSS animation with a paused Web Animation.
 
 import { FNS, KNOWN, LENGTH, defaultOf, fmtColor, fmtFns, fmtNum, fmtTokens, parseFns, parseNum, parseTokens, rangeFor, specOf, splitTop, toHex, toRgba } from './props.js';
-import { startAurora, stopAurora } from './aurora.js';
+import { EXAMPLE_CSS, EXAMPLE_SESSION, KEYFRAME_META, exampleCssWith, exampleDoc } from './example.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -152,11 +152,10 @@ async function load({ keepTime = false } = {}) {
   if (!has) {
     $('#file').textContent = '';
     $('#dirty').hidden = true;
-    if (data.hosted) renderConnectCard(data.mcpUrl, data);
-    startAurora($('#empty'));
+    if (data.hosted) renderHome(data.mcpUrl, data);
     return;
   }
-  stopAurora();
+  stopHome();
   if (S.session.kind === 'schema') {
     loadSchema(data);
     applyRole();
@@ -196,28 +195,656 @@ async function load({ keepTime = false } = {}) {
   if (S.hosted) listen();
 }
 
-/** Root of a hosted anni: nothing to edit here, show how an agent connects. */
-function renderConnectCard(mcpUrl, { ttlDays = 7, tokenRequired = false } = {}) {
-  const sidecar = 'claude mcp add anni -- npx -y anni-mcp';
-  const http = `claude mcp add --transport http anni ${mcpUrl}`;
-  const codex = `[mcp_servers.anni]\ncommand = "npx"\nargs = ["-y", "anni-mcp"]`;
-  const copy = (s) => () => navigator.clipboard.writeText(s).then(() => toast('Copied'));
-  $('.empty-card').replaceChildren(
-    h('img', { class: 'logo big', src: 'brand/anni-logo.png', alt: 'anni' }),
-    h('h1', {}, 'Connect your agent to anni'),
-    h('p', {}, 'Your agent turns values from your code into controls here – animations on a timeline, styles, any literal – you tune them on the real page, and the agent writes them back to your files.'),
-    h('p', { class: 'cmd' }, h('span', { class: 'muted' }, 'Claude Code (recommended: the sidecar keeps file contents out of the model)'), h('code', {}, sidecar), h('button', { class: 'chrome-btn', onclick: copy(sidecar) }, 'Copy')),
-    h('p', { class: 'cmd' }, h('span', { class: 'muted' }, 'Codex · ~/.codex/config.toml'), h('code', { class: 'block' }, codex), h('button', { class: 'chrome-btn', onclick: copy(codex) }, 'Copy')),
-    h('p', { class: 'cmd' }, h('span', { class: 'muted' }, 'Zero-install, any Streamable HTTP client (the agent passes file contents itself)'), h('code', {}, http), h('button', { class: 'chrome-btn', onclick: copy(http) }, 'Copy')),
-    h('p', { class: 'muted' }, `Then say: “open the bounce animation from styles.css in anni”.${tokenRequired ? ' This instance requires a token (ANNI_TOKEN).' : ''}`),
+/* ---------- homepage (root of a hosted anni) ---------- */
+
+const PROMPT = 'open my css animation in anni';
+const MODE_HINTS = {
+  mcp: 'The sidecar from npm reads and writes your files itself – their contents never pass through the model.',
+  local: 'Everything on your machine: the editor runs offline on 127.0.0.1, without anni.run.',
+  http: 'Zero-install, for any Streamable HTTP client – the agent passes file contents itself.',
+};
+const mcpJson = (server) => JSON.stringify({ mcpServers: { anni: server } }, null, 1).replace(/\n\s*/g, ' '); // one line, spaced
+/** The setup line per agent and way to connect. `json` is the mcpServers entry most other clients take. */
+const installCommands = (mcpUrl) => ({
+  'Claude Code': {
+    mcp: 'claude mcp add anni -- npx -y anni-mcp',
+    local: 'claude mcp add anni -- npx -y -p anni-mcp anni-mcp-local',
+    http: `claude mcp add --transport http anni ${mcpUrl}`,
+  },
+  Codex: {
+    mcp: 'codex mcp add anni -- npx -y anni-mcp',
+    local: 'codex mcp add anni -- npx -y -p anni-mcp anni-mcp-local',
+    http: `codex mcp add anni --url ${mcpUrl}`,
+  },
+  'Cursor & co': {
+    json: true,
+    mcp: mcpJson({ command: 'npx', args: ['-y', 'anni-mcp'] }),
+    local: mcpJson({ command: 'npx', args: ['-y', '-p', 'anni-mcp', 'anni-mcp-local'] }),
+    http: mcpJson({ url: mcpUrl }),
+  },
+});
+
+const home = { raf: 0, drift: 0, timers: [] };
+function stopBoot() {
+  for (const t of home.timers) clearTimeout(t);
+  home.timers = [];
+}
+function stopHome() {
+  cancelAnimationFrame(home.raf);
+  cancelAnimationFrame(home.drift);
+  home.raf = home.drift = 0;
+  stopBoot();
+}
+
+/** Nothing to edit here: the example loop in an editor window, a prompt that opens it for real, the install line. */
+function renderHome(mcpUrl, { tokenRequired = false } = {}) {
+  stopHome();
+  const card = $('.empty-card');
+  card.classList.add('home');
+  const demo = homeDemo();
+  const prompt = homePrompt(demo);
+  const typed = h('span', {});
+  const head = h(
+    'div',
+    { class: 'home-head' },
+    h('p', { class: 'home-intro', 'aria-hidden': 'true' }, h('span', { class: 'prompt-caret' }, '>'), typed, h('i', { class: 'cursor' })),
     h(
-      'p',
-      { class: 'muted small' },
-      `Files you open are stored in their session until it expires, ${ttlDays} days after the last activity. Sessions are yours: others with the link have to ask for access (or you make the session public, or lock it), and only you edit. Self-hosting is one `,
-      h('code', {}, 'wrangler deploy'),
-      '.',
+      'div',
+      { class: 'home-final' },
+      h('h1', {}, 'Edit CSS animations in an editor built for it.'),
+      h('p', { class: 'lede' }, 'Your agent turns values from your code into controls – animations on a timeline, styles, any literal. You tune them live, it writes them back.'),
+      prompt,
     ),
   );
+  card.replaceChildren(head, demo, homeInstall(installCommands(mcpUrl), tokenRequired), ...homeHow());
+  for (const sec of card.querySelectorAll('.home-sec:not(.setup)')) collapsible(sec);
+  bootHome(head, typed, demo);
+}
+
+/** A section folds under its heading: a click on it (or Enter / Space) toggles the rest, remembered per section. */
+function collapsible(sec) {
+  const h2 = sec.querySelector('h2');
+  const inner = h('div', { class: 'sec-inner' });
+  while (h2.nextSibling) inner.append(h2.nextSibling);
+  sec.append(h('div', { class: 'sec-body' }, inner));
+  const key = h2.textContent;
+  let folded = [];
+  try {
+    folded = JSON.parse(localStorage.getItem('anni.folded') || '[]');
+  } catch {}
+  const set = (closed) => {
+    sec.classList.toggle('collapsed', closed);
+    h2.setAttribute('aria-expanded', String(!closed));
+    inner.inert = closed;
+  };
+  const toggle = () => {
+    const closed = !sec.classList.contains('collapsed');
+    set(closed);
+    folded = folded.filter((k) => k !== key).concat(closed ? [key] : []);
+    try {
+      localStorage.setItem('anni.folded', JSON.stringify(folded));
+    } catch {}
+  };
+  h2.prepend(h('span', { class: 'sec-chevron', 'aria-hidden': 'true' }, '▾'));
+  Object.assign(h2, { tabIndex: 0, onclick: toggle, onkeydown: (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), toggle()) });
+  h2.setAttribute('role', 'button');
+  set(folded.includes(key));
+}
+
+/**
+ * The intro: at first only the loop and its name, while the prompt types itself out where the heading goes and
+ * is sent; the editor unfolds around the loop (timeline from below, panel from the side), then the title and the
+ * open row fade in in place of the typed prompt. A click (or reduced motion) skips straight to the end.
+ */
+function bootHome(head, typed, demo) {
+  const finish = () => {
+    stopBoot();
+    typed.textContent = PROMPT;
+    demo.classList.add('open');
+    head.classList.add('ready');
+  };
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return finish();
+  for (const el of [head, demo]) el.addEventListener('pointerdown', finish, { once: true });
+  const at = (ms, fn) => home.timers.push(setTimeout(fn, ms));
+  let t = 700;
+  for (let i = 1; i <= PROMPT.length; i++) at((t += 20 + Math.random() * 25), () => (typed.textContent = PROMPT.slice(0, i)));
+  at((t += 420), () => {
+    head.classList.add('sent');
+    demo.classList.add('open');
+  });
+  at((t += 850), finish);
+}
+
+/**
+ * The example in an editor-like window, and a very small anni: its real keyframes as tracks. Click one to see
+ * that pose and edit its values in the panel, drag it to retime, click the timeline to scrub. Open takes the
+ * edits along (`demo.css()`).
+ */
+function homeDemo() {
+  const time = h('span', { class: 'demo-time' }, '0 ms');
+  const play = h('button', { class: 'demo-play', title: 'Play / pause', 'aria-label': 'Play / pause' }, '❚❚');
+  const loopBox = h('input', { type: 'checkbox', checked: true });
+  const reset = h('button', { class: 'demo-reset', hidden: true }, 'reset');
+  const undoBtn = h('button', { title: 'Undo (Ctrl+Z)', 'aria-label': 'Undo', disabled: true }, '↶');
+  const redoBtn = h('button', { title: 'Redo (Ctrl+Shift+Z)', 'aria-label': 'Redo', disabled: true }, '↷');
+  const frame = h('iframe', { class: 'demo-frame', title: 'Example animation', tabindex: '-1', srcdoc: exampleDoc() });
+  const tl = h('div', { class: 'demo-tl' });
+  const panel = h('div', { class: 'demo-panel-in' });
+  const demo = h(
+    'div',
+    { class: 'demo' },
+    h('div', { class: 'demo-bar-wrap' }, h('div', { class: 'demo-bar' }, play, h('label', { class: 'check', title: 'Loop' }, loopBox, 'Loop'), h('span', { class: 'name' }, EXAMPLE_SESSION.file), h('span', { class: 'spacer' }), reset, undoBtn, redoBtn, time)),
+    frame,
+    h('aside', { class: 'demo-panel' }, panel),
+    h('div', { class: 'demo-tl-wrap' }, tl),
+  );
+  demo.css = () => EXAMPLE_CSS;
+  frame.addEventListener('load', () => {
+    const doc = frame.contentDocument;
+    const anims = doc.getAnimations();
+    if (!anims.length) return;
+    const ball = doc.querySelector('.ball');
+    const dur = anims[0].effect.getComputedTiming().duration;
+    const strip = ({ computedOffset, ...k }) => k;
+    const tracks = anims.map((a) => ({ a, name: a.animationName, el: a.effect.target, frames: a.effect.getKeyframes().map(strip), marks: [] }));
+    const original = tracks.map((t) => t.frames.map((k) => ({ ...k })));
+    let sel = null; // { t, i }: the selected keyframe
+    let dirty = false;
+    let playing = true;
+    demo.css = () => (dirty ? exampleCssWith(Object.fromEntries(tracks.map((t) => [t.name, t.frames]))) : EXAMPLE_CSS);
+
+    const setPlaying = (on) => {
+      playing = on;
+      for (const t of tracks) on ? t.a.play() : t.a.pause();
+      play.textContent = on ? '❚❚' : '▶';
+    };
+    // Loop off: the current pass plays to its end and holds there; play starts it over.
+    const looping = () => loopBox.checked;
+    loopBox.addEventListener('change', () => {
+      for (const t of tracks) {
+        const at = (t.a.currentTime ?? 0) % dur;
+        t.a.effect.updateTiming(looping() ? { iterations: Infinity, fill: 'none' } : { iterations: 1, fill: 'forwards' });
+        t.a.currentTime = at;
+      }
+    });
+    tracks[0].a.addEventListener('finish', () => setPlaying(false));
+    const seek = (p) => {
+      setPlaying(false);
+      for (const t of tracks) t.a.currentTime = Math.min(0.9999, Math.max(0, p)) * dur;
+    };
+    const apply = (t) => {
+      t.a.effect.setKeyframes(t.frames);
+      dirty = true;
+      reset.hidden = false;
+    };
+
+    // Undo: a snapshot of every track's keyframes before each change – a whole drag, one field's typing, a reset.
+    const past = [];
+    const future = [];
+    const snapshot = () => tracks.map((t) => t.frames.map((k) => ({ ...k })));
+    const syncHistory = () => {
+      undoBtn.disabled = !past.length;
+      redoBtn.disabled = !future.length;
+    };
+    const record = () => {
+      past.push(snapshot());
+      if (past.length > 100) past.shift();
+      future.length = 0;
+      syncHistory();
+    };
+    const restore = (snap) => {
+      tracks.forEach((t, n) => {
+        t.frames = snap[n].map((k) => ({ ...k }));
+        t.a.effect.setKeyframes(t.frames);
+      });
+      dirty = JSON.stringify(snap) !== JSON.stringify(original);
+      reset.hidden = !dirty;
+      build();
+      select(sel && { t: sel.t, i: Math.min(sel.i, sel.t.frames.length - 1) });
+    };
+    const step = (from, to) => {
+      if (!from.length) return;
+      to.push(snapshot());
+      restore(from.pop());
+      syncHistory();
+    };
+    const undo = () => step(past, future);
+    const redo = () => step(future, past);
+    undoBtn.addEventListener('click', undo);
+    redoBtn.addEventListener('click', redo);
+    addEventListener('keydown', (e) => {
+      const key = e.key.toLowerCase();
+      if (!(e.ctrlKey || e.metaKey) || (key !== 'z' && key !== 'y') || !demo.isConnected || e.target.closest?.('.prompt')) return;
+      e.preventDefault();
+      key === 'y' || e.shiftKey ? redo() : undo();
+    });
+    const select = (s) => {
+      sel = s;
+      for (const t of tracks) t.marks.forEach((m, i) => m.classList.toggle('sel', !!s && s.t === t && s.i === i));
+      if (s) seek(s.t.frames[s.i].offset);
+      renderPanel();
+    };
+
+    // The panel: the live pose of the ball, or the selected keyframe's values as fields (one per transform function).
+    const live = { y: h('dd', {}), sx: h('dd', {}), sy: h('dd', {}) };
+    const field = (value, onInput, type = 'text') => {
+      const input = h('input', { type, value, spellcheck: 'false', autocomplete: 'off' });
+      let recorded = false; // one undo step per stretch of typing in a field
+      input.addEventListener('focus', () => (recorded = false));
+      input.addEventListener('input', () => {
+        if (!recorded) record();
+        recorded = true;
+        onInput(input.value);
+      });
+      return input;
+    };
+    const renderPanel = () => {
+      if (!sel) {
+        panel.replaceChildren(
+          h('h3', {}, 'div.ball · hop'),
+          h('dl', {}, h('dt', {}, 'translateY'), live.y, h('dt', {}, 'scaleX'), live.sx, h('dt', {}, 'scaleY'), live.sy),
+          h('p', { class: 'demo-tip' }, 'Click a keyframe to edit it, drag it to retime, click the timeline to scrub. Open takes your edits along.'),
+        );
+        return;
+      }
+      const { t, i } = sel;
+      const k = t.frames[i];
+      // The loop's two ends share their values in the CSS (0%, 100%): editing one edits both.
+      const twin = k.offset === 0 ? t.frames.at(-1) : k.offset === 1 ? t.frames[0] : null;
+      const rows = [];
+      for (const [p, v] of Object.entries(k)) {
+        if (KEYFRAME_META.has(p)) continue;
+        const linked = twin && twin.offset !== k.offset && twin[p] === v;
+        const set = (value) => {
+          k[p] = value;
+          if (linked) twin[p] = value;
+          apply(t);
+        };
+        // Colours get a picker (just the colour); transforms one field per function; anything else a text field.
+        if (/color$/i.test(p)) {
+          const rgba = toRgba(v);
+          rows.push(h('dt', {}, 'color'), field(rgba ? toHex(rgba) : '#000000', set, 'color'));
+          continue;
+        }
+        const fns = [...String(v).matchAll(/([a-zA-Z]+)\(([^)]*)\)/g)].map((m) => ({ fn: m[1], args: m[2] }));
+        if (!fns.length) rows.push(h('dt', {}, p), field(v, set));
+        for (const f of fns)
+          rows.push(
+            h('dt', {}, f.fn),
+            field(f.args, (args) => {
+              f.args = args;
+              set(fns.map((x) => `${x.fn}(${x.args})`).join(' '));
+            }),
+          );
+      }
+      panel.replaceChildren(h('h3', {}, `${t.name} · ${+(k.offset * 100).toFixed(1)}%`), h('p', { class: 'demo-el' }, `div.${t.el.classList[0]}`), h('dl', {}, rows));
+    };
+
+    // Drag a keyframe between its neighbours; the loop's ends stay put. The pose follows the keyframe.
+    const drag = (e, t, i) => {
+      e.preventDefault();
+      e.stopPropagation();
+      select({ t, i });
+      const k = t.frames[i];
+      if (k.offset === 0 || k.offset === 1) return;
+      const lane = e.currentTarget.parentElement.getBoundingClientRect();
+      const lo = t.frames[i - 1].offset + 0.01;
+      const hi = t.frames[i + 1].offset - 0.01;
+      let moved = false;
+      const move = (ev) => {
+        if (!moved) record();
+        moved = true;
+        k.offset =Math.round(Math.min(hi, Math.max(lo, (ev.clientX - lane.left) / lane.width)) * 200) / 200;
+        t.marks[i].style.left = `${k.offset * 100}%`;
+        t.marks[i].title = `${t.name} ${+(k.offset * 100).toFixed(1)}%`;
+        apply(t);
+        seek(k.offset);
+        panel.querySelector('h3').textContent = `${t.name} · ${+(k.offset * 100).toFixed(1)}%`;
+      };
+      const up = () => {
+        removeEventListener('pointermove', move);
+        removeEventListener('pointerup', up);
+      };
+      addEventListener('pointermove', move);
+      addEventListener('pointerup', up);
+    };
+
+    const build = () => {
+      tl.replaceChildren(
+        ...tracks.map((t) => {
+          t.marks = t.frames.map((k, i) => {
+            const m = h('i', { class: `demo-kf${k.offset === 0 || k.offset === 1 ? ' end' : ''}`, style: `left: ${k.offset * 100}%`, title: `${t.name} ${+(k.offset * 100).toFixed(1)}%` });
+            m.addEventListener('pointerdown', (e) => drag(e, t, i));
+            return m;
+          });
+          return h('div', { class: 'demo-row' }, h('span', {}, t.name), h('div', { class: 'demo-lane' }, t.marks));
+        }),
+        h('div', { class: 'demo-playhead' }),
+      );
+    };
+    // Scrub: press anywhere else on the timeline and drag.
+    tl.addEventListener('pointerdown', (e) => {
+      if (e.target.classList.contains('demo-kf')) return;
+      const lane = tl.querySelector('.demo-lane').getBoundingClientRect();
+      const move = (ev) => seek((ev.clientX - lane.left) / lane.width);
+      const up = () => {
+        removeEventListener('pointermove', move);
+        removeEventListener('pointerup', up);
+      };
+      select(null);
+      move(e);
+      addEventListener('pointermove', move);
+      addEventListener('pointerup', up);
+    });
+    play.addEventListener('click', () => {
+      if (!playing && sel) select(null);
+      setPlaying(!playing);
+    });
+    reset.addEventListener('click', () => {
+      record();
+      tracks.forEach((t, n) => {
+        t.frames = original[n].map((k) => ({ ...k }));
+        t.a.effect.setKeyframes(t.frames);
+      });
+      dirty = false;
+      reset.hidden = true;
+      build();
+      select(null);
+      setPlaying(true);
+    });
+    build();
+    renderPanel();
+
+    const tick = () => {
+      const now = anims[0].currentTime ?? 0;
+      const t = looping() ? now % dur : Math.min(now, dur);
+      tl.style.setProperty('--p', t / dur);
+      time.textContent = `${Math.round(t)} / ${dur} ms`;
+      for (const tr of tracks) tr.marks.forEach((m, i) => m.classList.toggle('hit', playing && Math.abs(tr.frames[i].offset - t / dur) < 0.025));
+      if (!sel) {
+        const m = getComputedStyle(ball).transform.match(/matrix\(([^)]+)\)/)?.[1].split(',').map(Number) || [1, 0, 0, 1, 0, 0];
+        live.y.textContent = `${Math.round(m[5])} px`;
+        live.sx.textContent = m[0].toFixed(2);
+        live.sy.textContent = m[3].toFixed(2);
+      }
+      home.raf = requestAnimationFrame(tick);
+    };
+    cancelAnimationFrame(home.raf);
+    home.raf = requestAnimationFrame(tick);
+  });
+  return demo;
+}
+
+/** Whatever is typed, sending it opens the example – with the edits made in the demo – as a session of its own, owned by this browser. */
+function homePrompt(demo) {
+  const input = h('input', { value: PROMPT, placeholder: PROMPT, spellcheck: 'false', autocomplete: 'off', 'aria-label': 'Message to your agent' });
+  const go = h('button', { class: 'chrome-btn', type: 'submit' }, 'Open ↵');
+  const open = async (e) => {
+    e.preventDefault();
+    stopBoot();
+    if (!input.value) input.value = PROMPT;
+    go.disabled = true;
+    go.textContent = 'Opening …';
+    try {
+      const files = EXAMPLE_SESSION.files.map((f) => (f.path === EXAMPLE_SESSION.file ? { ...f, content: demo.css() } : f));
+      const r = await api('POST', '/api/sessions', { ...EXAMPLE_SESSION, files, auth: true, ownerName: myName() || undefined });
+      location.href = r.token ? `${r.url}#owner=${encodeURIComponent(r.token)}` : r.url;
+    } catch (err) {
+      toast(err.message);
+      go.disabled = false;
+      go.textContent = 'Open ↵';
+    }
+  };
+  return h('form', { class: 'prompt', onsubmit: open }, h('label', { class: 'prompt-field' }, h('span', { class: 'prompt-caret' }, '>'), input), go);
+}
+
+const METRICS = [
+  ['100 tokens', 'few 100 tokens per session', 'The model only passes file paths. The sidecar uploads and writes the files itself, so every drag in the editor costs no tokens at all.'],
+  ['0 re-prompts', 'to get the feel right', 'No more describing easing and timing to your agent in English and hoping it lands. Drag the keyframes until the motion feels right – the agent writes exactly that.'],
+  ['0', 'lines touched besides your edits', 'Save rewrites only the declarations you changed – formatting, comments and the rest of the file stay as they were.'],
+  ['not standalone', 'a tool for your project', 'anni is not an animation app of its own. It opens the animations that already live in your project, on your own page, and hands the result straight back to your code.'],
+  ['1', 'playhead for every animation', 'Every CSS animation on the page pauses and follows one clock: scrub, step frame by frame or play, and they all move together.'],
+];
+
+/**
+ * The key points as tags in a panel, each at a fixed place with a small idle sway. The cursor pulls them a
+ * little as it moves through the panel, the hovered one most; hovering (or tapping) a tag shows its text below,
+ * under it.
+ */
+function homeMetrics() {
+  const caption = h('p', { class: 'metric-caption' });
+  let held = null;
+  // Always one tag shown: the hovered one, else the first ("100 tokens").
+  const show = (card) => {
+    held = card || cards[0];
+    for (const c of cards) c.el.classList.toggle('on', c === held);
+    caption.textContent = held.text;
+    caption.classList.add('on');
+    place(held);
+  };
+  const cards = METRICS.map(([big, unit, text], i) => {
+    const card = { text, phase: i * 2.1 + 0.6, x: 0, y: 0, s: 1 };
+    card.el = h('div', { class: 'metric', tabindex: '0', onpointerenter: () => show(card), onpointerleave: (e) => e.pointerType === 'mouse' && show(null), onfocus: () => show(card), onblur: () => show(null) }, h('b', {}, big), h('span', {}, unit));
+    return card;
+  });
+  const space = h('div', { class: 'metric-space' }, cards.map((c) => c.el));
+  const panel = h('div', { class: 'metrics' }, space, h('div', { class: 'metric-below' }, caption));
+  // The caption sits under the tag it explains, kept inside the panel.
+  const place = (card) => {
+    const w = panel.clientWidth;
+    const cw = Math.min(360, w);
+    const centre = card.el.offsetLeft + card.el.offsetWidth / 2;
+    caption.style.width = `${cw}px`;
+    caption.style.left = `${Math.max(0, Math.min(w - cw, centre - cw / 2))}px`;
+  };
+  const pointer = { x: 0, y: 0, in: false };
+  space.addEventListener('pointermove', (e) => {
+    const r = space.getBoundingClientRect();
+    Object.assign(pointer, { x: e.clientX - r.left, y: e.clientY - r.top, in: true });
+  });
+  space.addEventListener('pointerleave', () => (pointer.in = false));
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let t = 0;
+  let last = 0;
+  let visible = false;
+  const tick = (now) => {
+    t += Math.min(50, now - (last || now)) / 1000;
+    last = now;
+    for (const c of cards) {
+      // Where the cursor pulls the tag: towards it, fading out with distance; the hovered tag follows it most.
+      let tx = 0;
+      let ty = 0;
+      if (pointer.in && !still) {
+        const dx = pointer.x - (c.el.offsetLeft + c.el.offsetWidth / 2);
+        const dy = pointer.y - (c.el.offsetTop + c.el.offsetHeight / 2);
+        const near = Math.max(0, 1 - Math.hypot(dx, dy) / 320);
+        const k = c === held ? 0.14 : 0.06 * near;
+        tx = Math.max(-14, Math.min(14, dx * k));
+        ty = Math.max(-10, Math.min(10, dy * k));
+      }
+      c.x += (tx - c.x) * 0.12;
+      c.y += (ty - c.y) * 0.12;
+      c.s += ((c === held ? 1.05 : 1) - c.s) * 0.15;
+      const sway = still ? [0, 0] : [2 * Math.sin(t * 1.1 + c.phase), 3 * Math.sin(t * 0.8 + c.phase * 1.3)];
+      c.el.style.transform = `translate(${(c.x + sway[0]).toFixed(1)}px, ${(c.y + sway[1]).toFixed(1)}px) scale(${c.s.toFixed(3)})`;
+    }
+    if (visible) home.drift = requestAnimationFrame(tick);
+  };
+  // Animate only while the panel is on screen.
+  new IntersectionObserver(([e]) => {
+    visible = e.isIntersecting;
+    if (visible) place(held); // laid out now
+    cancelAnimationFrame(home.drift);
+    last = 0;
+    if (visible) home.drift = requestAnimationFrame(tick);
+  }).observe(space);
+  show(null);
+  return panel;
+}
+
+// The savings estimate: what getting one animation right costs by re-prompting, against one anni session.
+const SAVES = [
+  { key: 'rounds', label: 'Re-prompts per animation', min: 1, max: 15, step: 1, value: 4, fmt: (v) => `${v}×` },
+  { key: 'tokens', label: 'Tokens per re-prompt', min: 1000, max: 50000, step: 500, value: 6000, fmt: (v) => v.toLocaleString('en-US') },
+  { key: 'minutes', label: 'Minutes per re-prompt', min: 0.5, max: 10, step: 0.5, value: 3, fmt: (v) => `${v} min` },
+];
+const ANNI_TOKENS = 400; // a whole session: the agent passes a path and reads back a short diff
+
+/** What it saves: sliders for how re-prompting goes for you, the tokens and time that anni saves per animation. */
+function homeSaves() {
+  const v = Object.fromEntries(SAVES.map((f) => [f.key, f.value]));
+  const tokens = h('b', {});
+  const time = h('b', {});
+  const barWithout = h('i', { class: 'bar-without' });
+  const barWith = h('i', { class: 'bar-with' });
+  const withoutN = h('em', {});
+  const fields = SAVES.map((f) => {
+    const out = h('output', {}, f.fmt(f.value));
+    const input = h('input', { type: 'range', min: f.min, max: f.max, step: f.step, value: f.value, 'aria-label': f.label });
+    input.addEventListener('input', () => {
+      v[f.key] = +input.value;
+      out.textContent = f.fmt(v[f.key]);
+      update();
+    });
+    return h('label', { class: 'saves-field' }, h('span', {}, h('span', {}, f.label), out), input);
+  });
+  const update = () => {
+    const without = v.rounds * v.tokens;
+    tokens.textContent = Math.max(0, without - ANNI_TOKENS).toLocaleString('en-US');
+    const min = v.rounds * v.minutes;
+    time.textContent = min >= 60 ? `${(min / 60).toFixed(1)} h` : `${min} min`;
+    withoutN.textContent = without.toLocaleString('en-US');
+    barWithout.style.width = '100%';
+    barWith.style.width = `${Math.max(1, (ANNI_TOKENS / without) * 100)}%`;
+  };
+  update();
+  return h(
+    'section',
+    { class: 'saves home-sec late' },
+    h('h2', {}, 'What it saves'),
+    h(
+      'div',
+      { class: 'saves-panel' },
+      h('div', { class: 'saves-inputs' }, fields),
+      h(
+        'div',
+        { class: 'saves-out' },
+        h('div', { class: 'saves-big' }, tokens, h('span', {}, 'tokens saved per animation')),
+        h('div', { class: 'saves-big' }, time, h('span', {}, 'of prompting and waiting saved')),
+        h(
+          'div',
+          { class: 'saves-bars' },
+          h('div', {}, h('span', {}, 'Re-prompting ', withoutN), h('div', { class: 'saves-track' }, barWithout)),
+          h('div', {}, h('span', {}, `anni ~${ANNI_TOKENS}`), h('div', { class: 'saves-track' }, barWith)),
+        ),
+      ),
+    ),
+    h('p', { class: 'muted saves-note' }, 'Estimates – set the sliders to how your agent and project behave. A whole anni session costs a few hundred tokens: the agent passes a path and reads back a short diff.'),
+  );
+}
+
+/** The sections after Setup: the key points, what it saves, the pipeline with its steps, where the files live. */
+function homeHow() {
+  const c = (s) => h('code', {}, s);
+  const step = (n, title, ...body) => h('li', { class: 'how-fact' }, h('h3', {}, h('span', { class: 'how-n' }, n), title), h('p', {}, ...body));
+  const node = (name, where) => h('div', { class: 'flow-node' }, h('b', {}, name), h('span', {}, where));
+  const edge = (via, what) => h('div', { class: 'flow-edge' }, h('span', {}, via), h('span', {}, what));
+  const fact = (title, ...body) => h('div', { class: 'how-fact' }, h('h3', {}, title), h('p', {}, ...body));
+  return [
+    h('section', { class: 'how home-sec late' }, h('h2', {}, 'How it works'), homeMetrics()),
+    homeSaves(),
+    h(
+      'section',
+      { class: 'pipeline home-sec late' },
+      h('h2', {}, 'Pipeline'),
+      h(
+        'div',
+        { class: 'flow', 'aria-label': 'Data flow' },
+        node('agent', 'Claude Code, Codex …'),
+        edge('MCP', 'file path'),
+        node('anni-mcp', 'sidecar, your machine'),
+        edge('HTTPS', 'files'),
+        node('session', 'Durable Object'),
+        edge('SSE', 'live edits'),
+        node('editor', '<id>.anni.run'),
+      ),
+      h(
+        'ol',
+        { class: 'how-steps' },
+        step('01', 'Your agent opens it', 'Over MCP your agent calls ', c('open_animation'), ' with a file path. The sidecar on your machine reads the stylesheet, the page that links it and its assets, and uploads them into a new session. File contents never pass through the model – a whole session costs a few hundred tokens.'),
+        step('02', 'You tune it on the real page', 'The editor loads your page in a frame and pauses every CSS animation on it with the Web Animations API; the playhead drives them all. Keyframes, timing, easing and styles preview live while you drag.'),
+        step('03', 'Save writes it back', 'Save sends the edited file to the agent, which is waiting in ', c('wait_for_save'), '. The sidecar writes only the changed declarations to disk and hands the agent a short diff – the rest of the file stays untouched.'),
+      ),
+    ),
+    h(
+      'section',
+      { class: 'files home-sec late' },
+      h('h2', {}, 'Where your files live'),
+      h(
+        'div',
+        { class: 'how-facts' },
+        fact('One Durable Object per session', 'anni runs on a Cloudflare Worker. Every session is its own Durable Object with its own SQLite-backed storage: the uploaded files, the live state of the editor, the open tabs and the agent waiting for a save. Nothing is shared between sessions, and there are no accounts.'),
+        fact('Its own origin', 'Each session is served from its own subdomain, ', c('<id>.anni.run'), ', with an unguessable id – an uploaded page can’t script another session. Session pages are never cached or indexed.'),
+        fact('Yours, by token', 'The agent’s link carries an owner token in the ', c('#fragment'), ', which browsers never send to a server; the session stores only its SHA-256. Others with the link ask for access, unless you make the session public or lock it. Only you edit.'),
+        fact('Gone after 7 days', 'Every open and save pushes an alarm out; 7 days after the last activity the session deletes everything it stored. Closing a session deletes it right away. Uploads are capped at 1.5 MB per file and 24 MB per session.'),
+        fact('Or not on Cloudflare at all', 'Local mode runs the same editor on ', c('127.0.0.1'), ' – nothing leaves your machine. Or deploy your own instance with ', c('wrangler deploy'), ' and require a token with ', c('ANNI_TOKEN'), '.'),
+      ),
+    ),
+  ];
+}
+
+/** Setup: pick the agent and the way to connect, get one line; a click on the line copies it. */
+function homeInstall(agents, tokenRequired) {
+  const stored = (key, fallback, ok) => {
+    try {
+      const v = localStorage.getItem(key);
+      return ok(v) ? v : fallback;
+    } catch {
+      return fallback;
+    }
+  };
+  let agent = stored('anni.agent', 'Claude Code', (v) => v in agents);
+  let mode = stored('anni.install', 'mcp', (v) => v in MODE_HINTS);
+  const code = h('code', {});
+  const COPY_ICON = '<svg viewBox="0 0 14 14" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="4.5" y="4.5" width="8.5" height="8.5"/><path d="M9.5 2.5V1H1v8.5h1.5"/></svg>';
+  const state = h('span', { class: 'copy-state', 'aria-label': 'Copy' });
+  state.innerHTML = COPY_ICON;
+  const hint = h('p', { class: 'muted install-hint' });
+  const dollar = h('span', { class: 'dollar' }, '$');
+  const tabs = (items, pick) => h('div', { class: 'seg', role: 'tablist' }, ...items.map((v) => h('button', { 'data-v': v, role: 'tab', onclick: () => pick(v) }, v)));
+  const agentSeg = tabs(Object.keys(agents), (v) => set(v, mode));
+  const modeSeg = tabs(Object.keys(MODE_HINTS), (v) => set(agent, v));
+  const line = h('button', { class: 'cmdline', title: 'Click to copy' }, dollar, code, state);
+  const set = (a, m) => {
+    agent = a;
+    mode = m;
+    try {
+      localStorage.setItem('anni.agent', a);
+      localStorage.setItem('anni.install', m);
+    } catch {}
+    for (const b of agentSeg.children) b.classList.toggle('on', b.dataset.v === a);
+    for (const b of modeSeg.children) b.classList.toggle('on', b.dataset.v === m);
+    const json = agents[a].json;
+    dollar.hidden = !!json;
+    code.textContent = agents[a][m];
+    hint.textContent = (json ? 'Add it to your client’s MCP config (mcpServers). ' : '') + MODE_HINTS[m] + (tokenRequired && m === 'http' ? ' This instance requires a token (ANNI_TOKEN).' : '');
+  };
+  line.addEventListener('click', () =>
+    navigator.clipboard.writeText(agents[agent][mode]).then(
+      () => {
+        line.classList.add('copied');
+        state.textContent = 'Copied';
+        clearTimeout(line.t);
+        line.t = setTimeout(() => {
+          line.classList.remove('copied');
+          state.innerHTML = COPY_ICON;
+        }, 1600);
+      },
+      () => toast('Could not copy – select the command instead'),
+    ),
+  );
+  set(agent, mode);
+  return h('section', { class: 'setup home-sec' }, h('div', { class: 'setup-head' }, h('h2', {}, 'Setup'), agentSeg), h('div', { class: 'install' }, modeSeg, line), hint);
 }
 
 /* ---------- access: lock screen, roles, requests, watching (hosted only) ---------- */
@@ -249,10 +876,11 @@ function showLock(lock) {
   banner(null);
   accessBar(null);
   $('#empty').hidden = false;
-  startAurora($('#empty'));
+  stopHome();
   const owner = lock.owner || 'the person who shared it';
   const logo = h('img', { class: 'logo big', src: 'brand/anni-logo.png', alt: 'anni' });
   const card = $('.empty-card');
+  card.classList.remove('home');
   if (lock.closed) {
     card.replaceChildren(logo, h('h1', {}, 'This session was closed'), h('p', {}, 'Everything in it was deleted.'), h('p', { class: 'muted' }, 'To go on, ask your agent to open the animation in anni again – that starts a new session.'));
   } else if (lock.mode === 'locked') {
