@@ -2787,6 +2787,7 @@ function updatePlayhead() {
   const now = $('#t-now');
   const total = $('#t-dur');
   if (document.activeElement !== now) now.value = Math.round(S.t);
+  now.classList.toggle('on-key', onKeyframe());
   if (document.activeElement !== total) total.value = Math.round(sceneDur());
   total.title = 'Length of the timeline – at least as long as the longest animation; type a longer one for room to drag keyframes later. An animation’s own length changes by dragging its first or last keyframe, or in the Timing panel.';
   schedulePanel();
@@ -2937,11 +2938,11 @@ addEventListener('keydown', (e) => {
   } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
     e.preventDefault();
     const dir = e.key === 'ArrowLeft' ? -1 : 1;
-    if (e.shiftKey) jumpToKeyframe(dir);
+    if (e.altKey) jumpToKeyframe(dir);
     else {
       S.playing = false;
       updatePlayButton();
-      S.t = clamp(S.t + dir * arrowStep(), 0, sceneDur());
+      S.t = clamp(stepToward(S.t, dir, e.shiftKey ? 10 : 1), 0, sceneDur());
       ensurePlayheadVisible();
       updatePlayhead();
     }
@@ -2960,8 +2961,24 @@ addEventListener('keydown', (e) => {
   }
 });
 
-/** Arrow step: 1 % of the visible window, in whole frames – one frame when zoomed in, bigger steps zoomed out. */
-const arrowStep = () => Math.max(1, Math.round(viewSpan() / 100 / FRAME)) * FRAME;
+/**
+ * Arrow keys: to the next whole ms (Shift: the next multiple of 10 ms – the grid dragged keyframes snap to),
+ * so a playhead left between values by scrubbing lands on round times, and on keyframes.
+ */
+const stepTime = (t, dir, step) => (dir > 0 ? Math.floor(t / step + 1e-6) * step + step : Math.ceil(t / step - 1e-6) * step - step);
+
+/** One arrow step – but a keyframe lying before the next step catches the playhead first. */
+function stepToward(t, dir, step) {
+  const next = stepTime(t, dir, step);
+  const between = keyframeTimes()
+    .map((k) => k.t)
+    .filter((k) => (dir > 0 ? k > t + 0.5 && k < next : k < t - 0.5 && k > next));
+  if (!between.length) return next;
+  return dir > 0 ? Math.min(...between) : Math.max(...between);
+}
+
+/** Is the playhead on a keyframe of any element? Its time turns orange then. */
+const onKeyframe = () => keyframeTimes().some((k) => Math.abs(k.t - S.t) < 0.5);
 
 /** Every keyframe of the scene as page time, with what it belongs to. */
 function keyframeTimes() {
@@ -2973,7 +2990,7 @@ function keyframeTimes() {
   return out.sort((a, b) => a.t - b.t);
 }
 
-/** Shift+arrow: playhead to the next/previous keyframe of any element; selects it if it belongs to the edited animation. */
+/** Alt+arrow: playhead to the next/previous keyframe of any element; selects it if it belongs to the edited animation. */
 function jumpToKeyframe(dir) {
   const times = keyframeTimes();
   const hit = dir > 0 ? times.find((k) => k.t > S.t + 0.5) : [...times].reverse().find((k) => k.t < S.t - 0.5);
