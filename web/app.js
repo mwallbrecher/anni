@@ -2,7 +2,7 @@
 // iframe (same origin), and drives the selected CSS animation with a paused Web Animation.
 
 import { FNS, KNOWN, LENGTH, defaultOf, fmtColor, fmtFns, fmtNum, fmtTokens, parseFns, parseNum, parseTokens, rangeFor, specOf, splitTop, toHex, toRgba } from './props.js';
-import { EXAMPLE_CSS, EXAMPLE_ID, EXAMPLE_SESSION, KEYFRAME_META, exampleCssWith, exampleDoc } from './example.js';
+import { ADDITION, ADD_PROMPT, EXAMPLE_CSS, EXAMPLE_ID, EXAMPLE_SESSION, KEYFRAME_META, exampleCssWith, exampleDoc, withAddition } from './example.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -238,13 +238,13 @@ function stopHome() {
   document.querySelector('#home-nav')?.remove();
 }
 
-/** Nothing to edit here: the example loop in an editor window, a prompt that opens it for real, the install line. */
+/** Nothing to edit here: the example loop in an editor window, a conversation with the agent above it, the install line. */
 function renderHome(mcpUrl, { tokenRequired = false } = {}) {
   stopHome();
   const card = $('.empty-card');
   card.classList.add('home');
   const demo = homeDemo();
-  const prompt = homePrompt(demo);
+  const chat = homeChat(demo);
   const typed = h('span', {});
   const head = h(
     'div',
@@ -255,13 +255,13 @@ function renderHome(mcpUrl, { tokenRequired = false } = {}) {
       { class: 'home-final' },
       h('h1', {}, 'Edit CSS animations in an editor built for it.'),
       h('p', { class: 'lede' }, 'Your agent turns values from your code into controls – animations on a timeline, styles, any literal. You tune them live, it writes them back.'),
-      prompt,
+      chat,
     ),
   );
   card.replaceChildren(head, demo, homeInstall(installCommands(mcpUrl), tokenRequired), ...homeHow());
   for (const sec of card.querySelectorAll('.home-sec')) collapsible(sec);
   homeNav(card);
-  bootHome(head, typed, demo);
+  bootHome(head, typed, demo, chat);
 }
 
 /**
@@ -339,19 +339,37 @@ function collapsible(sec) {
 
 /**
  * The intro: at first only the loop and its name, while the prompt types itself out where the heading goes and
- * is sent; the editor unfolds around the loop (timeline from below, panel from the side), then the title and the
- * open row fade in in place of the typed prompt. A click (or reduced motion) skips straight to the end.
+ * is sent; the editor unfolds around the loop (timeline from below, panel from the side). Then the title fades in,
+ * the typed prompt snaps down to the terminal's first line and the terminal fades in around it, the agent's reply
+ * already there. A click (or reduced motion) skips straight to the end.
  */
-function bootHome(head, typed, demo) {
-  const finish = () => {
+function bootHome(head, typed, demo, chat) {
+  let done = false;
+  const finish = (fly) => {
+    if (done) return;
+    done = true;
     stopBoot();
     typed.textContent = PROMPT;
     demo.classList.add('open');
+    const intro = head.querySelector('.home-intro');
+    if (fly) intro.style.opacity = '1'; // it flies instead of fading out
     head.classList.add('ready');
     document.querySelector('#home-nav')?.classList.add('on');
+    if (!fly) return chat.land(false, intro);
+    // Fly: from where it was typed to the first line of the terminal, shrinking to its size; there it stays.
+    const caret = intro.firstElementChild;
+    const box = intro.getBoundingClientRect();
+    const from = caret.getBoundingClientRect();
+    const to = chat.first.querySelector('.term-mark').getBoundingClientRect();
+    const scale = parseFloat(getComputedStyle(chat.first).fontSize) / parseFloat(getComputedStyle(intro).fontSize);
+    intro.style.transformOrigin = `${from.left - box.left}px ${from.top - box.top}px`;
+    caret.style.color = 'var(--muted)';
+    intro.style.transform = `translate(${to.left - from.left}px, ${to.top + to.height / 2 - (from.top + (scale * from.height) / 2)}px) scale(${scale})`;
+    // It stands; the terminal fades in around it, then takes it in as its first message.
+    home.timers.push(setTimeout(() => (chat.classList.add('shown'), home.timers.push(setTimeout(() => chat.land(true, intro), 260))), 460));
   };
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return finish();
-  for (const el of [head, demo]) el.addEventListener('pointerdown', finish, { once: true });
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return finish(false);
+  for (const el of [head, demo]) el.addEventListener('pointerdown', () => finish(false), { once: true });
   const at = (ms, fn) => home.timers.push(setTimeout(fn, ms));
   let t = 700;
   for (let i = 1; i <= PROMPT.length; i++) at((t += 20 + Math.random() * 25), () => (typed.textContent = PROMPT.slice(0, i)));
@@ -359,7 +377,7 @@ function bootHome(head, typed, demo) {
     head.classList.add('sent');
     demo.classList.add('open');
   });
-  at((t += 850), finish);
+  at((t += 850), () => finish(true));
 }
 
 /**
@@ -385,7 +403,11 @@ function homeDemo() {
     h('aside', { class: 'demo-panel' }, panel),
     h('div', { class: 'demo-tl-wrap' }, tl),
   );
-  demo.css = () => EXAMPLE_CSS;
+  let added = false; // the agent added the rectangle ("add a pulsating rectangle")
+  const baseCss = () => (added ? EXAMPLE_CSS + ADDITION.css : EXAMPLE_CSS);
+  demo.css = baseCss;
+  // The session's files as they are now: the edited stylesheet, and the page with whatever the agent added.
+  demo.files = () => EXAMPLE_SESSION.files.map((f) => ({ ...f, content: f.path === EXAMPLE_SESSION.file ? demo.css() : added ? withAddition(f.content) : f.content }));
   frame.addEventListener('load', () => {
     const doc = frame.contentDocument;
     const anims = doc.getAnimations();
@@ -398,7 +420,7 @@ function homeDemo() {
     let sel = null; // { t, i }: the selected keyframe
     let dirty = false;
     let playing = true;
-    demo.css = () => (dirty ? exampleCssWith(Object.fromEntries(tracks.map((t) => [t.name, t.frames]))) : EXAMPLE_CSS);
+    demo.css = () => (dirty ? exampleCssWith(Object.fromEntries(tracks.map((t) => [t.name, t.frames])), baseCss()) : baseCss());
 
     const setPlaying = (on) => {
       playing = on;
@@ -441,10 +463,11 @@ function homeDemo() {
     };
     const restore = (snap) => {
       tracks.forEach((t, n) => {
+        if (!snap[n]) return; // a track the agent added after this step keeps its keyframes
         t.frames = snap[n].map((k) => ({ ...k }));
         t.a.effect.setKeyframes(t.frames);
       });
-      dirty = JSON.stringify(snap) !== JSON.stringify(original);
+      dirty = JSON.stringify(snapshot()) !== JSON.stringify(original);
       reset.hidden = !dirty;
       build();
       select(sel && { t: sel.t, i: Math.min(sel.i, sel.t.frames.length - 1) });
@@ -461,7 +484,7 @@ function homeDemo() {
     redoBtn.addEventListener('click', redo);
     addEventListener('keydown', (e) => {
       const key = e.key.toLowerCase();
-      if (!(e.ctrlKey || e.metaKey) || (key !== 'z' && key !== 'y') || !demo.isConnected || e.target.closest?.('.prompt')) return;
+      if (!(e.ctrlKey || e.metaKey) || (key !== 'z' && key !== 'y') || !demo.isConnected || e.target.closest?.('.term')) return;
       e.preventDefault();
       key === 'y' || e.shiftKey ? redo() : undo();
     });
@@ -490,7 +513,7 @@ function homeDemo() {
         panel.replaceChildren(
           h('h3', {}, 'div.ball · hop'),
           h('dl', {}, h('dt', {}, 'translateY'), live.y, h('dt', {}, 'scaleX'), live.sx, h('dt', {}, 'scaleY'), live.sy),
-          h('p', { class: 'demo-tip' }, 'Click a keyframe to edit it, drag it to retime, click the timeline to scrub. Open takes your edits along.'),
+          h('p', { class: 'demo-tip' }, 'Click a keyframe to edit it, drag it to retime, click the timeline to scrub. The session you open takes your edits along.'),
         );
         return;
       }
@@ -602,6 +625,26 @@ function homeDemo() {
     build();
     renderPanel();
 
+    // The agent writes into the open project: the new element and its @keyframes go into the page, and its
+    // animation joins the timeline on the shared clock – a track like the others, to click, drag and edit.
+    demo.add = () => {
+      if (added) return;
+      added = true;
+      doc.head.append(h('style', {}, ADDITION.css));
+      doc.querySelector('.ball').insertAdjacentHTML('beforebegin', ADDITION.html); // under the ball, like withAddition
+      const a = doc.getAnimations().find((x) => !tracks.some((t) => t.a === x));
+      if (!a) return;
+      a.effect.updateTiming(looping() ? { iterations: Infinity, fill: 'none' } : { iterations: 1, fill: 'forwards' });
+      a.currentTime = anims[0].currentTime;
+      if (!playing) a.pause();
+      const t = { a, name: a.animationName, el: a.effect.target, frames: a.effect.getKeyframes().map(strip), marks: [] };
+      tracks.push(t);
+      original.push(t.frames.map((k) => ({ ...k })));
+      build();
+      select(sel);
+      tl.lastElementChild.previousElementSibling.classList.add('new');
+    };
+
     const tick = () => {
       const now = anims[0].currentTime ?? 0;
       const t = looping() ? now % dur : Math.min(now, dur);
@@ -628,27 +671,135 @@ function homeWindowControls() {
   return h('span', { class: 'win', 'aria-hidden': 'true' }, dot('win-close', '×'), dot('win-min', '−'), dot('win-full', '+'));
 }
 
-/** Whatever is typed, sending it opens the example – with the edits made in the demo – as a session of its own, owned by this browser. */
-function homePrompt(demo) {
-  const input = h('input', { value: PROMPT, placeholder: PROMPT, spellcheck: 'false', autocomplete: 'off', 'aria-label': 'Message to your agent' });
-  const go = h('button', { class: 'chrome-btn', type: 'submit' }, 'Open ↵');
-  const open = async (e) => {
-    e.preventDefault();
+/**
+ * The agent's side, as a terminal conversation in one window: the message that opened the example (the intro's
+ * typed prompt lands there) and its reply, which can open the session for real, then a prompt for the next one.
+ * "add a pulsating rectangle" has the agent think (the dot breathes), write a new element into the open project –
+ * it appears in the demo at once, as a track to edit – and stream its reply. The next message opens the session,
+ * with the edits made in the demo and what the agent added, owned by this browser.
+ */
+function homeChat(demo) {
+  const OPEN_PROMPT = 'open in full editor';
+  const log = h('div', { class: 'term-log', 'aria-live': 'polite' });
+  const say = (who, ...text) => {
+    const line = h('p', { class: `term-${who}` }, h('span', { class: 'term-mark', 'aria-hidden': 'true' }, who === 'user' ? '>' : '●'), h('span', {}, ...text));
+    log.append(line);
+    return line;
+  };
+  // A fake token stream: the whole reply is laid out at once (so the line doesn't grow), its words show in bursts.
+  const stream = (line, parts, then) => {
+    const tokens = parts.flatMap((p) => (typeof p === 'string' ? p.match(/\s*\S+\s*/g).map((w) => h('span', {}, w)) : [p]));
+    for (const t of tokens) t.classList.add('tok');
+    line.lastChild.replaceChildren(...tokens);
+    let i = 0;
+    const burst = () => {
+      for (let n = 1 + Math.floor(Math.random() * 3); n && i < tokens.length; n--) tokens[i++].classList.add('on');
+      if (i < tokens.length) home.timers.push(setTimeout(burst, 28 + Math.random() * 45));
+      else then?.();
+    };
+    burst();
+  };
+  const think = (line, on) => line.classList.toggle('thinking', on);
+  const input = h('input', { spellcheck: 'false', autocomplete: 'off', 'aria-label': 'Message to your agent' });
+  const go = h('button', { type: 'submit', title: 'Send (Enter)', 'aria-label': 'Send' }, '↵');
+  let next = null; // what the next message does: add the rectangle, then open the session (null until asked, and while busy)
+  // "add a pulsating rectangle" types itself into the prompt (focusing it or sending completes it);
+  // "open in full editor" is just there.
+  let typing = 0;
+  let suggested = '';
+  const typed = () => {
+    clearTimeout(typing);
+    typing = 0;
+    input.value = input.placeholder = suggested;
+  };
+  input.addEventListener('focus', () => typing && typed());
+  // While the agent works the prompt fades out; it comes back with the reply, the next command in it.
+  const busy = (on) => {
+    go.disabled = input.disabled = on;
+    input.closest('form')?.classList.toggle('away', on);
+  };
+  const ask = (step, animated = true) => {
+    next = step;
+    suggested = step === 'add' ? ADD_PROMPT : OPEN_PROMPT;
+    busy(false);
+    if (!animated) return typed();
+    input.value = input.placeholder = '';
+    let i = 0;
+    const key = () => {
+      input.value = suggested.slice(0, ++i);
+      if (i < suggested.length) home.timers.push((typing = setTimeout(key, 30 + Math.random() * 40)));
+      else typed();
+    };
+    home.timers.push((typing = setTimeout(key, 1000))); // a beat after the terminal is there
+  };
+
+  const openSession = async () => {
     stopBoot();
-    if (!input.value) input.value = PROMPT;
-    go.disabled = true;
-    go.textContent = 'Opening …';
+    const before = next;
+    next = null;
+    busy(true);
+    const reply = say('agent');
+    think(reply, true);
     try {
-      const files = EXAMPLE_SESSION.files.map((f) => (f.path === EXAMPLE_SESSION.file ? { ...f, content: demo.css() } : f));
-      const r = await api('POST', '/api/sessions', { ...EXAMPLE_SESSION, files, auth: true, ownerName: myName() || undefined });
+      const r = await api('POST', '/api/sessions', { ...EXAMPLE_SESSION, files: demo.files(), auth: true, ownerName: myName() || undefined });
       location.href = r.token ? `${r.url}#owner=${encodeURIComponent(r.token)}` : r.url;
     } catch (err) {
-      toast(err.message);
-      go.disabled = false;
-      go.textContent = 'Open ↵';
+      think(reply, false);
+      stream(reply, [err.message], () => ask(before || 'add', false));
     }
   };
-  return h('form', { class: 'prompt', onsubmit: open }, h('label', { class: 'prompt-field' }, h('span', { class: 'prompt-caret' }, '>'), input), go);
+  const send = (e) => {
+    e.preventDefault();
+    if (!next || (next === 'add' && !demo.add)) return;
+    if (typing) typed();
+    say('user', input.value.trim() || input.placeholder);
+    input.value = input.placeholder = ''; // sent: the prompt stays empty while the agent works
+    if (next === 'open') return openSession();
+    next = null;
+    busy(true);
+    const reply = say('agent');
+    think(reply, true);
+    demo.classList.add('writing');
+    home.timers.push(
+      setTimeout(() => {
+        demo.add();
+        demo.classList.remove('writing');
+        think(reply, false);
+        stream(reply, ['Put a pad under the ball – ', h('code', {}, '.rect'), ' with ', h('code', {}, '@keyframes pulse'), ', on the jump’s timing. It’s live in the editor: click its keyframes.'], () => home.timers.push(setTimeout(() => ask('open', false), 1000))); // a beat after the reply
+      }, 1100),
+    );
+  };
+
+  const first = say('user', PROMPT);
+  // The editor is already open, so its reply is there from the start (the link works unless the agent is busy).
+  const idle = () => next || !term.classList.contains('landed');
+  say('agent', `${EXAMPLE_SESSION.file} is open in anni – the loop below. `, h('button', { class: 'term-link', type: 'button', onclick: () => idle() && openSession() }, 'Open the full editor ↗'));
+  const term = h(
+    'div',
+    { class: 'term' },
+    h('div', { class: 'term-bar' }, homeWindowControls(), h('span', {}, '~/my-site')),
+    log,
+    h('form', { class: 'term-input', onsubmit: send }, h('label', {}, h('span', { class: 'term-mark' }, '>'), input), go),
+  );
+  // The intro's typed prompt arrives here and becomes the first message itself (`first` holds its place till then);
+  // then the next command types itself in.
+  term.first = first;
+  term.land = (animated, intro) => {
+    if (intro) {
+      intro.querySelector('.cursor')?.remove();
+      intro.removeAttribute('style');
+      intro.removeAttribute('aria-hidden');
+      intro.className = 'term-user';
+      const caret = intro.firstElementChild;
+      caret.removeAttribute('style');
+      caret.className = 'term-mark';
+      caret.setAttribute('aria-hidden', 'true');
+      first.replaceWith(intro);
+    }
+    term.classList.add('shown', 'landed');
+    ask('add', animated);
+  };
+  return term;
 }
 
 const METRICS = [

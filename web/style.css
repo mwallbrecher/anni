@@ -477,8 +477,9 @@ button.primary { color: var(--offwhite); }
 .home-head { display: grid; margin-bottom: 24px; }
 .home-head > * { grid-area: 1 / 1; }
 .home .home-intro {
-  align-self: center; justify-self: center; display: flex; align-items: center; gap: 12px; margin: 0;
-  font-family: var(--display); font-size: clamp(18px, 5vw, 24px); line-height: 1.3; color: var(--bright);
+  align-self: center; justify-self: center; display: flex; align-items: center; gap: 0.6em; margin: 0; /* as a terminal line, in em: it becomes one */
+  position: relative; z-index: 1; /* above the terminal while that fades in (a stacking context, painted later) */
+  font-family: var(--display); font-size: clamp(15px, 4.4vw, 24px); line-height: 1.3; color: var(--bright); white-space: nowrap;
   transition: opacity 400ms, transform 600ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 .home-intro .cursor { flex: none; width: 0.55em; height: 1.1em; background: var(--accent); animation: cursor-blink 1s steps(1) infinite; }
@@ -486,14 +487,16 @@ button.primary { color: var(--offwhite); }
 .home-head.sent .home-intro { animation: intro-send 700ms ease-out; } /* "sent": a flash of the accent, the cursor goes */
 .home-head.sent .cursor { visibility: hidden; }
 @keyframes intro-send { from { color: var(--accent); } }
-.home-head.ready .home-intro { opacity: 0; transform: translateY(-14px); }
+.home-head.ready .home-intro { opacity: 0; transform: translateY(-14px); pointer-events: none; transition: transform 440ms cubic-bezier(0.7, 0, 0.15, 1); } /* snaps into the terminal, never fades */
+.home-intro .prompt-caret { flex: none; width: 0.6em; transition: color 440ms; }
 .home-final { visibility: hidden; transition: visibility 0s 1s; }
 .home-final > * { opacity: 0; transform: translateY(10px); transition: opacity 500ms, transform 600ms cubic-bezier(0.2, 0.8, 0.2, 1); }
 .home-head.ready .home-final { visibility: visible; transition: none; }
 .home-head.ready .home-final > * { opacity: 1; transform: none; }
 .home-head.ready .home-final > :nth-child(1) { transition-delay: 150ms; }
 .home-head.ready .home-final > :nth-child(2) { transition-delay: 250ms; }
-.home-head.ready .home-final > :nth-child(3) { transition-delay: 450ms; } /* the open row last, below the title */
+.home-final > .term { transform: none; transition: opacity 240ms; }
+.home-head.ready .home-final > .term:not(.shown) { opacity: 0; } /* fades in around the typed prompt once it stands */
 /* The intro (bootHome): the window starts as just the loop; .open unfolds the timeline row and the panel column. */
 .demo {
   --unfold: 650ms cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -507,20 +510,20 @@ button.primary { color: var(--offwhite); }
 .demo-bar-wrap .demo-bar { opacity: 0; transition: opacity 400ms 200ms; }
 .demo.open .demo-bar { opacity: 1; }
 .demo-bar { display: flex; align-items: center; gap: 10px; height: 30px; padding: 0 12px; border-bottom: 1px solid var(--line); font-family: var(--display); font-size: 11px; color: var(--muted); }
-.demo-bar .name { color: var(--text); }
+.demo-bar .name { color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .demo-bar button { height: 20px; padding: 0 6px; font-family: var(--display); font-size: 11px; color: var(--text); }
 .demo-play { width: 24px; }
 /* window dots, for the look only: grey, taking their colours (and glyphs) under the pointer, as on a Mac */
-.demo-bar .win { display: inline-flex; gap: 7px; margin-right: 6px; }
-.demo-bar .win > span { width: 12px; height: 12px; border-radius: 50%; background: var(--line-2); display: grid; place-items: center; transition: background 150ms; }
-.demo-bar .win span span { font: 600 10px/1 system-ui, sans-serif; color: rgba(0, 0, 0, 0.6); opacity: 0; }
-.demo-bar .win:hover span span { opacity: 1; }
-.demo-bar .win:hover .win-close { background: #ff5f57; }
-.demo-bar .win:hover .win-min { background: #febc2e; }
-.demo-bar .win:hover .win-full { background: #28c840; }
+.win { display: inline-flex; gap: 7px; margin-right: 6px; }
+.win > span { width: 12px; height: 12px; border-radius: 50%; background: var(--line-2); display: grid; place-items: center; transition: background 150ms; }
+.win span span { font: 600 10px/1 system-ui, sans-serif; color: rgba(0, 0, 0, 0.6); opacity: 0; }
+.win:hover span span { opacity: 1; }
+.win:hover .win-close { background: #ff5f57; }
+.win:hover .win-min { background: #febc2e; }
+.win:hover .win-full { background: #28c840; }
 .demo-bar .check { font-family: var(--display); font-size: 11px; cursor: pointer; }
 .demo-bar .demo-reset { color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
-.demo-time { width: 14ch; text-align: right; font-variant-numeric: tabular-nums; } /* fixed: the buttons beside it never move */
+.demo-time { width: 14ch; flex-shrink: 0; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; } /* fixed: the buttons beside it never move */
 .demo-frame { grid-column: 1; grid-row: 2; align-self: stretch; display: block; width: 100%; min-width: 0; height: auto; min-height: 260px; border: 0; background: #111; pointer-events: none; }
 .demo-panel { grid-column: 2; grid-row: 2; min-width: 0; overflow: hidden; }
 .demo-panel-in {
@@ -553,14 +556,37 @@ button.primary { color: var(--offwhite); }
 .demo-playhead { position: absolute; top: 0; bottom: 0; left: calc(var(--label) + var(--lane-pad) + (100% - var(--label) - 2 * var(--lane-pad)) * var(--p, 0)); border-left: 1px solid var(--playhead); pointer-events: none; }
 .demo-playhead::before { content: ""; position: absolute; top: 0; left: -5px; border: 5px solid transparent; border-top: 7px solid var(--playhead); border-bottom: 0; }
 
-.prompt { display: flex; }
-.prompt-field { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 14px; background: var(--field); border: 1px solid var(--line-2); cursor: text; }
-.prompt-field:focus-within { border-color: var(--accent); }
 .prompt-caret { font-family: var(--display); color: var(--accent); }
-.prompt input { flex: 1; height: 100%; padding: 0; border: 0; background: transparent; font-size: 14px; color: var(--bright); }
-.prompt input::placeholder { color: var(--muted); }
-.prompt .chrome-btn { margin-left: 8px; white-space: nowrap; opacity: 1; border-color: var(--accent); }
-.prompt .chrome-btn:disabled { opacity: 0.5; transform: none; box-shadow: none; }
+/* The agent's terminal: one window, the conversation, the prompt for the next message. */
+.term { text-align: left; background: var(--field); border: 1px solid var(--line-2); }
+.term-bar { display: flex; align-items: center; gap: 12px; height: 30px; padding: 0 12px; border-bottom: 1px solid var(--line); font-family: var(--display); font-size: 11px; color: var(--muted); }
+.term-log { padding: 14px 16px 2px; font-family: var(--mono); font-size: 13px; line-height: 1.55; }
+.term-log p { display: flex; gap: 0.6em; margin: 0 0 10px; }
+.term-mark { flex: none; width: 0.6em; }
+.term-user { font-family: var(--display); color: var(--bright); } /* your commands in Departure Mono, the agent in the terminal's mono */
+.term-user .term-mark { color: var(--muted); }
+.term-agent { color: var(--muted); }
+.term-agent .term-mark { color: var(--accent); }
+.term:not(.landed) .term-log > p:first-child { visibility: hidden; } /* the first message arrives from the intro */
+.term-agent.thinking .term-mark { animation: breathe 1.1s ease-in-out infinite; }
+@keyframes breathe { 0%, 100% { opacity: 0.3; transform: scale(0.65); } 50% { opacity: 1; transform: scale(1.1); } }
+.term-log .tok { opacity: 0; pointer-events: none; transition: opacity 140ms; }
+.term-log .tok.on { opacity: 1; pointer-events: auto; }
+.term-agent code { padding: 0; background: transparent; font-size: inherit; color: var(--text); }
+.term-link { padding: 0; border: 0; background: none; font: inherit; color: var(--accent); cursor: pointer; }
+.term-link:hover { text-decoration: underline; background: none; }
+.term-input { display: flex; gap: 8px; margin: 4px 12px 12px; transition: opacity 160ms; }
+.term-input.away { opacity: 0; pointer-events: none; transition-duration: 220ms; } /* sent: back with the reply */
+.term-input label { flex: 1; min-width: 0; display: flex; align-items: center; gap: 0.6em; height: 40px; padding: 0 12px; border: 1px solid var(--line-2); font-family: var(--display); font-size: 13px; cursor: text; }
+.term-input label:focus-within { border-color: var(--accent); }
+.term-input .term-mark { color: var(--accent); }
+.term-input input { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; background: transparent; font-family: var(--display); font-size: 13px; color: var(--bright); }
+.term-input input::placeholder { color: var(--muted); }
+.term-input button { width: 40px; height: 40px; padding: 0; border: 1px solid var(--accent); background: transparent; color: var(--bright); font-family: var(--display); }
+.term-input button:disabled { opacity: 0.4; border-color: var(--line-2); }
+.demo.writing .name::after { content: ' · writing …'; color: var(--accent); }
+.demo-row.new { animation: row-new 1.6s ease-out; }
+@keyframes row-new { from { background: color-mix(in srgb, var(--accent) 28%, transparent); } }
 
 .setup { margin-top: 32px; } /* part of the first screen, not a section of its own */
 .setup-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-bottom: 14px; }
@@ -668,6 +694,7 @@ button.primary { color: var(--offwhite); }
 @media (max-width: 560px) {
   .demo-frame { min-height: 220px; }
   .demo-bar .name { display: none; } /* room for the buttons */
+  .demo-bar { gap: 7px; padding: 0 10px; }
   .demo { --panel-w: 140px; }
   .demo-panel-in { padding: 10px 8px; }
   .demo-panel-in dl { grid-template-columns: 1fr; gap: 2px; }

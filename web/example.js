@@ -132,6 +132,50 @@ export const EXAMPLE_SESSION = {
   animation: 'hop',
 };
 
+/**
+ * What the agent adds when asked in the hero ("add a pulsating rectangle"): the pad the ball lands on, part of
+ * the choreography. On hop's keyframes and easing it is small and dim while the ball is up, rises to meet the
+ * squashed ball on the impact, wide and bright, gives with the small bounce and settles while the ball rests.
+ * Written into the stylesheet and the scene (under the ball), as an agent would.
+ */
+export const ADD_PROMPT = 'add a pulsating rectangle';
+export const ADDITION = {
+  html: '<div class="rect"></div>',
+  css: `
+.rect {
+  width: 64px;
+  height: 6px;
+  translate: 0 26px;
+  background: #fafaf9;
+  animation: pulse 1.6s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    transform: translateY(0) scale(0.45, 1);
+    opacity: 0.3;
+  }
+  38% {
+    transform: translateY(-10px) scale(1.5, 0.5);
+    opacity: 1;
+  }
+  50% {
+    transform: translateY(0) scale(0.85, 1);
+    opacity: 0.6;
+  }
+  62% {
+    transform: translateY(0) scale(1.15, 0.8);
+    opacity: 0.95;
+  }
+  80% {
+    transform: translateY(0) scale(1, 1);
+    opacity: 0.85;
+  }
+}
+`,
+};
+export const withAddition = (html) => html.replace('    <div class="ball"></div>\n', `    ${ADDITION.html}\n    <div class="ball"></div>\n`);
+
 /** The hero preview: the page with its stylesheet inlined, for an srcdoc iframe. */
 export const exampleDoc = () => EXAMPLE_HTML.replace('<link rel="stylesheet" href="motion-example.css">', `<style>\n${EXAMPLE_CSS}</style>`);
 
@@ -139,9 +183,8 @@ const kebab = (p) => p.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
 /** Keyframe members that are timing, not properties. */
 export const KEYFRAME_META = new Set(['offset', 'computedOffset', 'easing', 'composite']);
 
-/** EXAMPLE_CSS with @keyframes blocks rewritten from Web Animations keyframes: { name: keyframes[] }. */
-export function exampleCssWith(edited) {
-  let css = EXAMPLE_CSS;
+/** `css` (the example's) with @keyframes blocks rewritten from Web Animations keyframes: { name: keyframes[] }. */
+export function exampleCssWith(edited, css = EXAMPLE_CSS) {
   for (const [name, frames] of Object.entries(edited)) {
     const start = css.indexOf(`@keyframes ${name} {`);
     if (start < 0) continue;
