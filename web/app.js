@@ -1317,7 +1317,8 @@ const OVERLAY_CSS = `
 #anni-ov .tag { position: absolute; left: 0; bottom: 100%; margin-bottom: 2px; padding: 1px 5px; border-radius: 0;
   background: #e97130; color: #fafaf9; font: 500 10px/1.5 Inter, system-ui, sans-serif; white-space: nowrap;
   transform: scale(calc(1 / var(--anni-z, 1))); transform-origin: 0 100%; }
-html.anni-pick, html.anni-pick * { cursor: crosshair !important; }`;
+html.anni-pick, html.anni-pick * { cursor: crosshair !important; }
+.anni-hidden { visibility: hidden !important; }`;
 
 /** Overlay layer inside the preview document, installed once per page load. */
 function overlay() {
@@ -2215,6 +2216,28 @@ function laneFor(g, prop, children) {
 
 const folded = new Map(); // group key -> user's expand/collapse choice
 
+/* Eye toggle: hides a group's elements in the preview only. The class is the state, so it lasts until the page reloads. */
+const EYE_OPEN = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>';
+const EYE_SHUT = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 6.5s2.2 3 6 3 6-3 6-3M4 8.6l-1.2 1.6M8 9.5v2M12 8.6l1.2 1.6"/></svg>';
+const isHidden = (g) => g.targets.length > 0 && g.targets.every((el) => el.classList.contains('anni-hidden'));
+
+function setHidden(targets, hide) {
+  overlay(); // installs the .anni-hidden rule in the preview document
+  for (const el of targets) el.classList.toggle('anni-hidden', hide);
+}
+
+/** Click toggles the group; Alt+click shows only this group (or everything again if it already was the only one). */
+function toggleEye(e, g) {
+  e.stopPropagation();
+  if (e.altKey) {
+    const others = S.groups.filter((o) => o !== g && o.targets.length);
+    const solo = !isHidden(g) && others.every(isHidden);
+    for (const o of others) setHidden(o.targets, !solo);
+    setHidden(g.targets, false);
+  } else setHidden(g.targets, !isHidden(g));
+  renderTimeline();
+}
+
 /** Header row of a group: element name, span bar of the animation, all its keyframes. */
 function groupRow(g, open) {
   const D = sceneDur();
@@ -2229,8 +2252,11 @@ function groupRow(g, open) {
     ? keyframeButtons(g, null)
     : g.keyframes.map((o) => h('span', { class: 'kf ghost', style: `left:${sceneX(g, o)}%`, title: `${fmtPct(o)} – not defined in this file` }));
   const fold = h('button', { class: `fold${open ? ' open' : ''}`, title: open ? 'Collapse' : 'Show properties', disabled: !g.anim, onclick: (e) => (e.stopPropagation(), folded.set(g.key, !open), renderTimeline()) }, '▸');
-  const label = h('div', { class: 'tl-label', title: g.targets[0] ? `${groupLabel(g)} – ${g.name}` : `${g.name} is not running on any element right now`, onclick: () => focusGroup(g) }, fold, h('span', { class: 'el' }, groupLabel(g)));
-  return h('div', { class: `tl-row group${g.name === S.name ? ' current' : ''}${g.anim ? '' : ' foreign'}` }, label, laneFor(g, null, [...span, ...kfs]));
+  const hidden = isHidden(g);
+  const eye = h('button', { class: `eye${hidden ? ' off' : ''}`, title: hidden ? 'Show in preview' : 'Hide in preview (Alt+click: show only this)', disabled: !g.targets.length, onclick: (e) => toggleEye(e, g) });
+  eye.innerHTML = hidden ? EYE_SHUT : EYE_OPEN;
+  const label = h('div', { class: 'tl-label', title: g.targets[0] ? `${groupLabel(g)} – ${g.name}` : `${g.name} is not running on any element right now`, onclick: () => focusGroup(g) }, eye, fold, h('span', { class: 'el' }, groupLabel(g)));
+  return h('div', { class: `tl-row group${g.name === S.name ? ' current' : ''}${g.anim ? '' : ' foreign'}${hidden ? ' hidden-el' : ''}` }, label, laneFor(g, null, [...span, ...kfs]));
 }
 
 function niceStep(total) {
