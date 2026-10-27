@@ -513,6 +513,7 @@ button.primary { color: var(--offwhite); }
 .demo-bar .name { color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .demo-bar button { height: 20px; padding: 0 6px; font-family: var(--display); font-size: 11px; color: var(--text); }
 .demo-play { width: 24px; }
+.demo-loop { width: 24px; display: grid; place-items: center; }
 /* window dots, for the look only: grey, taking their colours (and glyphs) under the pointer, as on a Mac */
 .win { display: inline-flex; gap: 7px; margin-right: 6px; }
 .win > span { width: 12px; height: 12px; border-radius: 50%; background: var(--line-2); display: grid; place-items: center; transition: background 150ms; }
@@ -521,7 +522,6 @@ button.primary { color: var(--offwhite); }
 .win:hover .win-close { background: #ff5f57; }
 .win:hover .win-min { background: #febc2e; }
 .win:hover .win-full { background: #28c840; }
-.demo-bar .check { font-family: var(--display); font-size: 11px; cursor: pointer; }
 .demo-bar .demo-reset { color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
 .demo-time { width: 14ch; flex-shrink: 0; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; } /* fixed: the buttons beside it never move */
 .demo-frame { grid-column: 1; grid-row: 2; align-self: stretch; display: block; width: 100%; min-width: 0; height: auto; min-height: 260px; border: 0; background: #111; pointer-events: none; }
@@ -585,8 +585,15 @@ button.primary { color: var(--offwhite); }
 .term-input button { width: 40px; height: 40px; padding: 0; border: 1px solid var(--accent); background: transparent; color: var(--bright); font-family: var(--display); }
 .term-input button:disabled { opacity: 0.4; border-color: var(--line-2); }
 .demo.writing .name::after { content: ' · writing …'; color: var(--accent); }
-.demo-row.new { animation: row-new 1.6s ease-out; }
-@keyframes row-new { from { background: color-mix(in srgb, var(--accent) 28%, transparent); } }
+.demo-row.new { animation: row-new 3.6s ease-out; }
+@keyframes row-new { 0%, 55% { background: color-mix(in srgb, var(--accent) 28%, transparent); } }
+/* Its keyframes pop in from left to right, each at its place in time (--at: its offset). */
+.demo-row.new .demo-kf { animation: kf-pop 420ms calc(250ms + var(--at) * 800ms) backwards; }
+@keyframes kf-pop {
+  from { transform: translate(-50%, -50%) rotate(45deg) scale(0); }
+  55% { transform: translate(-50%, -50%) rotate(45deg) scale(1.6); }
+  to { transform: translate(-50%, -50%) rotate(45deg) scale(1); }
+}
 
 .setup { margin-top: 32px; } /* part of the first screen, not a section of its own */
 .setup-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-bottom: 14px; }

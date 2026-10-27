@@ -28,7 +28,8 @@ const S = {
   t: 0, // ms within one iteration
   playing: false,
   speed: 1,
-  loop: true,
+  loop: 'loop', // LOOP_MODES
+  dir: 1, // playing forward (1) or back (-1, the second half of 'bounce')
   mode: 'page',
   css: null,
   saved: '',
@@ -122,6 +123,21 @@ function toast(msg) {
   el.classList.add('show');
   clearTimeout(toast.t);
   toast.t = setTimeout(() => el.classList.remove('show'), 1800);
+}
+
+/** What playback does at the end: start over, stop, or turn around. A click on the loop button steps through them. */
+const LOOP_MODES = {
+  loop: { label: 'Loop', icon: 'M2.5 7.5v-1a2 2 0 0 1 2-2h8M10.5 2.5l2 2-2 2M13.5 8.5v1a2 2 0 0 1-2 2h-8M5.5 13.5l-2-2 2-2' },
+  once: { label: 'Play once', icon: 'M2 8h9M8 5l3 3-3 3M13.5 4v8' },
+  bounce: { label: 'Back and forth', icon: 'M2.5 5.5h11M11 3l2.5 2.5L11 8M13.5 10.5h-11M5 8l-2.5 2.5L5 13' },
+};
+const nextLoopMode = (mode) => ({ loop: 'once', once: 'bounce', bounce: 'loop' })[mode];
+function showLoopMode(btn, mode) {
+  const { label, icon } = LOOP_MODES[mode];
+  btn.innerHTML = `<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${icon}"/></svg>`;
+  btn.title = `${label} – click for ${LOOP_MODES[nextLoopMode(mode)].label.toLowerCase()}`;
+  btn.setAttribute('aria-label', btn.title);
+  btn.dataset.mode = mode;
 }
 
 function banner(content) {
@@ -388,7 +404,10 @@ function bootHome(head, typed, demo, chat) {
 function homeDemo() {
   const time = h('span', { class: 'demo-time' }, '0 ms');
   const play = h('button', { class: 'demo-play', title: 'Play / pause', 'aria-label': 'Play / pause' }, '❚❚');
-  const loopBox = h('input', { type: 'checkbox', checked: true });
+  const loopBtn = h('button', { class: 'demo-loop' });
+  let loop = 'loop';
+  showLoopMode(loopBtn, loop);
+  const timing = () => (loop === 'once' ? { iterations: 1, direction: 'normal', fill: 'forwards' } : { iterations: Infinity, direction: loop === 'bounce' ? 'alternate' : 'normal', fill: 'none' });
   const reset = h('button', { class: 'demo-reset', hidden: true }, 'reset');
   const undoBtn = h('button', { title: 'Undo (Ctrl+Z)', 'aria-label': 'Undo', disabled: true }, '↶');
   const redoBtn = h('button', { title: 'Redo (Ctrl+Shift+Z)', 'aria-label': 'Redo', disabled: true }, '↷');
@@ -398,7 +417,7 @@ function homeDemo() {
   const demo = h(
     'div',
     { class: 'demo' },
-    h('div', { class: 'demo-bar-wrap' }, h('div', { class: 'demo-bar' }, homeWindowControls(), play, h('label', { class: 'check', title: 'Loop' }, loopBox, 'Loop'), h('span', { class: 'name' }, EXAMPLE_SESSION.file), h('span', { class: 'spacer' }), reset, undoBtn, redoBtn, time)),
+    h('div', { class: 'demo-bar-wrap' }, h('div', { class: 'demo-bar' }, homeWindowControls(), play, loopBtn, h('span', { class: 'name' }, EXAMPLE_SESSION.file), h('span', { class: 'spacer' }), reset, undoBtn, redoBtn, time)),
     frame,
     h('aside', { class: 'demo-panel' }, panel),
     h('div', { class: 'demo-tl-wrap' }, tl),
@@ -427,12 +446,20 @@ function homeDemo() {
       for (const t of tracks) on ? t.a.play() : t.a.pause();
       play.textContent = on ? '❚❚' : '▶';
     };
-    // Loop off: the current pass plays to its end and holds there; play starts it over.
-    const looping = () => loopBox.checked;
-    loopBox.addEventListener('change', () => {
+    // Where the pass stands (ms): 'once' plays to its end and holds there (play starts it over), 'bounce' runs
+    // every other pass backwards.
+    const pos = () => {
+      const now = anims[0].currentTime ?? 0;
+      if (loop === 'once') return Math.min(now, dur);
+      if (loop === 'bounce') return dur - Math.abs((now % (2 * dur)) - dur);
+      return now % dur;
+    };
+    loopBtn.addEventListener('click', () => {
+      const at = pos();
+      loop = nextLoopMode(loop);
+      showLoopMode(loopBtn, loop);
       for (const t of tracks) {
-        const at = (t.a.currentTime ?? 0) % dur;
-        t.a.effect.updateTiming(looping() ? { iterations: Infinity, fill: 'none' } : { iterations: 1, fill: 'forwards' });
+        t.a.effect.updateTiming(timing());
         t.a.currentTime = at;
       }
     });
@@ -625,8 +652,9 @@ function homeDemo() {
     build();
     renderPanel();
 
-    // The agent writes into the open project: the new element and its @keyframes go into the page, and its
-    // animation joins the timeline on the shared clock – a track like the others, to click, drag and edit.
+    // The agent writes into the open project: the new element and its @keyframes go into the page at once, on the
+    // shared clock. The returned function adds its track to the timeline – a row like the others, to click, drag
+    // and edit.
     demo.add = () => {
       if (added) return;
       added = true;
@@ -634,20 +662,27 @@ function homeDemo() {
       doc.querySelector('.ball').insertAdjacentHTML('beforebegin', ADDITION.html); // under the ball, like withAddition
       const a = doc.getAnimations().find((x) => !tracks.some((t) => t.a === x));
       if (!a) return;
-      a.effect.updateTiming(looping() ? { iterations: Infinity, fill: 'none' } : { iterations: 1, fill: 'forwards' });
-      a.currentTime = anims[0].currentTime;
-      if (!playing) a.pause();
-      const t = { a, name: a.animationName, el: a.effect.target, frames: a.effect.getKeyframes().map(strip), marks: [] };
-      tracks.push(t);
-      original.push(t.frames.map((k) => ({ ...k })));
-      build();
-      select(sel);
-      tl.lastElementChild.previousElementSibling.classList.add('new');
+      const sync = () => {
+        a.effect.updateTiming(timing());
+        a.currentTime = anims[0].currentTime;
+        if (!playing) a.pause();
+      };
+      sync();
+      // Its row comes in later, when the caller says so (once the agent's reply is done).
+      return () => {
+        sync();
+        const t = { a, name: a.animationName, el: a.effect.target, frames: a.effect.getKeyframes().map(strip), marks: [] };
+        tracks.push(t);
+        original.push(t.frames.map((k) => ({ ...k })));
+        build();
+        select(sel);
+        tl.lastElementChild.previousElementSibling.classList.add('new');
+        t.marks.forEach((m, i) => m.style.setProperty('--at', t.frames[i].offset));
+      };
     };
 
     const tick = () => {
-      const now = anims[0].currentTime ?? 0;
-      const t = looping() ? now % dur : Math.min(now, dur);
+      const t = pos();
       tl.style.setProperty('--p', t / dur);
       time.textContent = `${Math.round(t)} / ${dur} ms`;
       for (const tr of tracks) tr.marks.forEach((m, i) => m.classList.toggle('hit', playing && Math.abs(tr.frames[i].offset - t / dur) < 0.025));
@@ -762,10 +797,13 @@ function homeChat(demo) {
     demo.classList.add('writing');
     home.timers.push(
       setTimeout(() => {
-        demo.add();
+        const join = demo.add();
         demo.classList.remove('writing');
         think(reply, false);
-        stream(reply, ['Put a pad under the ball – ', h('code', {}, '.rect'), ' with ', h('code', {}, '@keyframes pulse'), ', on the jump’s timing. It’s live in the editor: click its keyframes.'], () => home.timers.push(setTimeout(() => ask('open', false), 1000))); // a beat after the reply
+        stream(reply, ['Put a pad under the ball – ', h('code', {}, '.rect'), ' with ', h('code', {}, '@keyframes pulse'), ', on the jump’s timing. It’s live in the editor: click its keyframes.'], () => {
+          home.timers.push(setTimeout(() => join?.(), 600)); // its track joins the timeline a beat after the reply
+          home.timers.push(setTimeout(() => ask('open', false), 1600)); // and the prompt a beat after that
+        });
       }, 1100),
     );
   };
@@ -818,9 +856,10 @@ const METRICS = [
 function homeMetrics() {
   const caption = h('p', { class: 'metric-caption' });
   let held = null;
-  // Always one tag shown: the hovered one, else the first ("100 tokens").
+  // Always one tag shown: the first ("100 tokens") to begin with, then the one hovered last – it stays when the
+  // pointer leaves.
   const show = (card) => {
-    held = card || cards[0];
+    held = card;
     for (const c of cards) c.el.classList.toggle('on', c === held);
     caption.textContent = held.text;
     caption.classList.add('on');
@@ -828,7 +867,7 @@ function homeMetrics() {
   };
   const cards = METRICS.map(([big, unit, text], i) => {
     const card = { text, phase: i * 2.1 + 0.6, x: 0, y: 0, s: 1 };
-    card.el = h('div', { class: 'metric', tabindex: '0', onpointerenter: () => show(card), onpointerleave: (e) => e.pointerType === 'mouse' && show(null), onfocus: () => show(card), onblur: () => show(null) }, h('b', {}, big), h('span', {}, unit));
+    card.el = h('div', { class: 'metric', tabindex: '0', onpointerenter: () => show(card), onfocus: () => show(card) }, h('b', {}, big), h('span', {}, unit));
     return card;
   });
   const space = h('div', { class: 'metric-space' }, cards.map((c) => c.el));
@@ -882,7 +921,7 @@ function homeMetrics() {
     last = 0;
     if (visible) home.drift = requestAnimationFrame(tick);
   }).observe(space);
-  show(null);
+  show(cards[0]);
   return panel;
 }
 
@@ -4213,11 +4252,21 @@ function tick(now) {
   const dt = now - last;
   last = now;
   if (S.model && S.playing) {
-    S.t += dt * S.speed;
-    if (S.t >= sceneDur()) {
-      if (S.loop) S.t %= sceneDur();
+    const d = sceneDur();
+    S.t += dt * S.speed * S.dir;
+    if (S.loop === 'bounce') {
+      // Turn around at either end.
+      if (S.t >= d) {
+        S.t = Math.max(0, 2 * d - S.t);
+        S.dir = -1;
+      } else if (S.t <= 0) {
+        S.t = Math.min(d, -S.t);
+        S.dir = 1;
+      }
+    } else if (S.t >= d) {
+      if (S.loop === 'loop') S.t %= d;
       else {
-        S.t = sceneDur();
+        S.t = d;
         S.playing = false;
         updatePlayButton();
       }
@@ -4247,9 +4296,15 @@ function togglePlay() {
 $('#play').onclick = togglePlay;
 $('#rewind').onclick = () => {
   S.t = 0;
+  S.dir = 1;
   updatePlayhead();
 };
-$('#loop').onchange = (e) => (S.loop = e.target.checked);
+$('#loop').onclick = () => {
+  S.loop = nextLoopMode(S.loop);
+  if (S.loop !== 'bounce') S.dir = 1;
+  showLoopMode($('#loop'), S.loop);
+};
+showLoopMode($('#loop'), S.loop);
 $('#speed').onchange = (e) => (S.speed = +e.target.value);
 $('#save').onclick = saveNow;
 $('#undo').onclick = () => (S.schema ? undoValues() : S.mode2 === 'editor' ? undoEditor() : undo());
