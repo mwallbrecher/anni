@@ -817,7 +817,7 @@ function syncPreview() {
 /* ---------- editing ---------- */
 
 function commit() {
-  S.history.push({ snap: snapshot(), sel: S.sel, picks: S.picks, name: S.name });
+  S.history.push({ snap: snapshot(), sel: S.sel, picks: S.picks, name: S.name, sceneLen: S.sceneLen });
   if (S.history.length > 200) S.history.shift();
   S.future = [];
 }
@@ -844,10 +844,14 @@ function afterChange(render = 'all') {
 
 function restore(entry, from, to) {
   if (!entry) return;
-  to.push({ snap: snapshot(), sel: S.sel, picks: S.picks, name: S.name });
+  to.push({ snap: snapshot(), sel: S.sel, picks: S.picks, name: S.name, sceneLen: S.sceneLen });
   S.model.animations = JSON.parse(entry.snap);
   S.sel = entry.sel;
   S.picks = entry.picks;
+  if (entry.sceneLen !== undefined && entry.sceneLen !== S.sceneLen) {
+    S.sceneLen = entry.sceneLen; // the timeline's length is part of the history too
+    resetTimelineView();
+  }
   // A multi-keyframe edit may have started in another animation; go back to it with its selection.
   if (entry.name && entry.name !== S.name && animBy(entry.name)) S.name = entry.name;
   if (!anim()) S.name = S.model.animations[0].name; // undo of a freshly created animation
@@ -1965,7 +1969,7 @@ function renderKeyframeSection(a) {
       'div',
       { class: 'section', id: 'kf-section' },
       h('h2', {}, 'Keyframe'),
-      h('p', { class: 'empty-inspector' }, 'Changing a value above keys it at the playhead. Keyframes in the timeline: click = select, drag on an empty track = select several (Shift adds), drag = move (snaps to the playhead; the first or last keyframe stretches the animation, Shift keeps the other keyframes’ times, ⌥ = duplicate, ⌘ = 1 ms steps), double-click a track = new keyframe, ⌘C / ⌘V = copy and paste at the playhead. Scrub in the ruler.'),
+      h('p', { class: 'empty-inspector' }, 'Changing a value above keys it at the playhead. Keyframes in the timeline: click = select, drag on an empty track = select several (Shift adds), drag = move (snaps to the playhead, the other keyframes keep their times; Shift on the first or last keyframe stretches the animation, ⌥ = duplicate, ⌘ = 1 ms steps), double-click a track = new keyframe, ⌘C / ⌘V = copy and paste at the playhead. Scrub in the ruler.'),
       S.clip ? h('div', { class: 'row', style: 'margin-top:10px' }, h('span', { class: 'muted note', style: 'margin:0' }, `Clipboard: ${S.clip.from}`), h('span', { class: 'spacer' }), h('button', { onclick: () => pasteAtPlayhead() }, 'Paste at playhead')) : null,
     );
   }
@@ -2472,8 +2476,9 @@ function startScrub(e, lane) {
 /**
  * Press on a keyframe. ⌘/Ctrl+click toggles it in the selection, and so does a Shift+click without moving.
  * Dragging moves this keyframe – or, on a keyframe of a multi-selection, all selected ones by the same time
- * (a plain click there selects just that one). Dragging the first or last keyframe stretches the animation;
- * with Shift held the other keyframes keep their times instead (see applyMove). ⌥ leaves copies behind.
+ * (a plain click there selects just that one). The other keyframes keep their times; with Shift held, dragging
+ * the first or last keyframe stretches the animation instead (see applyMove). ⌥ leaves copies behind.
+ * Keyframes stay within the timeline: from 0 to its length.
  */
 function startDrag(e, g, bi, oi) {
   if (e.button !== 0) return;
@@ -2508,9 +2513,10 @@ function startDrag(e, g, bi, oi) {
     }
   };
   if (!shiftPress) grab();
-  // The scale is frozen while dragging: rows don't rescale under the pointer, and a keyframe can be pulled past
-  // the end of the timeline (the scene grows to fit on release).
+  // The scale is frozen while dragging, so rows don't rescale under the pointer. Keyframes can't go past the
+  // timeline's length (type a longer one in the time box for more room).
   S.dragView = { start: viewStart(), span: viewSpan() };
+  const limit = sceneDur();
   const pageTime = (ev) => S.dragView.start + ((ev.clientX - rect.left) / rect.width) * S.dragView.span;
   const t0 = pageTime(e);
   const x0 = e.clientX;
@@ -2542,22 +2548,23 @@ function startDrag(e, g, bi, oi) {
         plan = planMove(picks(), g, { name: g.name, bi, oi });
       }
       // Snap the pressed keyframe to the playhead when within 8 px of it, else to 10 ms (⌘/Ctrl held: 1 ms);
-      // nothing may move before the page starts. Shift can be pressed or released mid-drag: the move is
-      // always recomputed from the start.
+      // nothing moves before 0 or past the timeline's end. Shift can be pressed or released mid-drag: the
+      // move is always recomputed from the start.
       const raw = plan.anchorT + pageTime(ev) - t0;
       const step = ev.metaKey || ev.ctrlKey ? 1 : 10;
       const snapMs = (8 / rect.width) * S.dragView.span;
       const target = Math.abs(raw - playT) <= snapMs ? playT : Math.round(raw / step) * step;
-      const dt = Math.max(target - plan.anchorT, -plan.earliest);
-      if (dt === plan.dt && ev.shiftKey === plan.keepTimes) return;
+      const dt = clampMove(plan, target - plan.anchorT, limit);
+      const keepTimes = !ev.shiftKey;
+      if (dt === plan.dt && keepTimes === plan.keepTimes) return;
       plan.dt = dt;
-      plan.keepTimes = ev.shiftKey;
-      applyMove(plan, dt, ev.shiftKey);
+      plan.keepTimes = keepTimes;
+      applyMove(plan, dt, keepTimes);
       afterChange(); // the time box turns orange when the keyframe lands on the playhead
     },
     () => {
       S.dragView = null;
-      if (moved) return renderTimeline(); // back to the normal scale, now fitting the new scene length
+      if (moved) return renderTimeline(); // back to the normal scale
       if (shiftPress) return toggle();
       if (multi) select(bi, oi, { seek: false }); // a plain click in a selection narrows it to this keyframe
       S.t = at(anim()); // a click moves the playhead to the keyframe
@@ -2569,12 +2576,15 @@ function startDrag(e, g, bi, oi) {
 /*
  * Moving keyframes in page time. Every keyframe of an affected animation is noted with its page time and offset;
  * the moved ones shift by dt and only their own animation's delay and duration change:
- * - Dragging the first (0 %) or last (100 %) keyframe moves that edge of the animation. The other keyframes
- *   keep their percentages, so they stretch along – what changing a CSS duration does.
- * - With Shift (keepTimes) the other keyframes keep their times instead and the span is rebuilt around them:
- *   an animation with a 0 % keyframe starts at its earliest keyframe, one with a 100 % keyframe ends at its latest.
+ * - keepTimes (a plain drag): the other keyframes keep their times and the span is rebuilt around them – an
+ *   animation with a 0 % keyframe starts at its earliest keyframe, one with a 100 % keyframe ends at its latest.
+ * - Stretch (Shift): dragging the first (0 %) or last (100 %) keyframe moves that edge; the other keyframes keep
+ *   their percentages, so they stretch along – what changing a CSS duration does.
  * In both, a keyframe pulled past an edge takes that edge with it.
  */
+
+/** The shared shift dt, limited so no moved keyframe ends up before 0 or after `limit` (the timeline's length). */
+const clampMove = (plan, dt, limit) => clamp(dt, -plan.earliest, Math.max(-plan.earliest, limit - plan.latest));
 function planMove(list, g, anchor) {
   const plans = new Map();
   for (const p of list) {
@@ -2606,7 +2616,7 @@ function planMove(list, g, anchor) {
   const all = [...plans.values()];
   const movedTimes = all.flatMap((pl) => pl.times.flatMap((ts, bi) => ts.filter((_, oi) => pl.moved[bi][oi])));
   const ap = plans.get(animBy(anchor.name));
-  return { plans: all, earliest: Math.min(...movedTimes), anchorT: ap.times[anchor.bi][anchor.oi], dt: null };
+  return { plans: all, earliest: Math.min(...movedTimes), latest: Math.max(...movedTimes), anchorT: ap.times[anchor.bi][anchor.oi], dt: null };
 }
 
 function applyMove(plan, dt, keepTimes) {
@@ -2832,8 +2842,8 @@ function moveSelectionTo(v) {
   if (Math.abs(S.t - at) > 0.5) return false;
   change(() => {
     const plan = planMove(list, g, anchor);
-    const dt = Math.max(v - plan.anchorT, -plan.earliest);
-    applyMove(plan, dt, false);
+    const dt = clampMove(plan, v - plan.anchorT, sceneDur());
+    applyMove(plan, dt, true); // like a plain drag: the other keyframes keep their times
     S.t = plan.anchorT + dt;
   });
   return true;
@@ -2851,7 +2861,10 @@ $('#t-now').addEventListener('change', (e) => {
 $('#t-dur').addEventListener('change', (e) => {
   const v = parseFloat(e.target.value);
   if (Number.isNaN(v) || !S.model) return;
-  S.sceneLen = Math.max(0, Math.round(v)); // view setting only – nothing in the file changes
+  const len = Math.max(0, Math.round(v));
+  if (len === (S.sceneLen || 0)) return;
+  // An undo step like any edit, though nothing in the file changes – the length is a view setting.
+  change(() => (S.sceneLen = len));
   resetTimelineView();
   renderTimeline();
 });
@@ -3056,8 +3069,8 @@ const SHORTCUTS = [
       [['Shift+[Drag] on a track'], 'Add a box selection to the current one'],
       [['Mod+A'], 'Select all keyframes of the animation'],
       [['[Double-click] a track'], 'New keyframe there'],
-      [['[Drag]'], 'Move – snaps to the playhead and to 10 ms; the first or last keyframe stretches the animation'],
-      [['Shift+[Drag]'], 'Move, the other keyframes keep their times'],
+      [['[Drag]'], 'Move – snaps to the playhead and to 10 ms, stays within the timeline; the other keyframes keep their times'],
+      [['Shift+[Drag]'], 'Move the first or last keyframe and stretch the animation – the others scale along'],
       [['Mod+[Drag]'], 'Move in 1 ms steps'],
       [['Alt+[Drag]'], 'Duplicate'],
       [['[Type] in the time box'], 'With the playhead on the selection: move it to that time'],
