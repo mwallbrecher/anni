@@ -23,8 +23,9 @@ export function sessionUrl(env, origin, id) {
   return `${origin}/s/${id}/`;
 }
 
-export async function call(env, id, path, body) {
-  const headers = { 'x-anni-version': versionOf(env), ...(body ? { 'Content-Type': 'application/json' } : {}) };
+/** Calls a session's agent side; `token` is its owner token (required once the session was started with one). */
+export async function call(env, id, path, body, token) {
+  const headers = { 'x-anni-version': versionOf(env), ...(body ? { 'Content-Type': 'application/json' } : {}), ...(token ? { 'x-anni-owner': token } : {}) };
   const send = () => sessionStub(env, id).fetch(new Request(`https://session.invalid${path}`, body ? { method: 'POST', headers, body: JSON.stringify(body) } : { headers }));
   let res;
   try {
@@ -39,14 +40,22 @@ export async function call(env, id, path, body) {
 
 export const isSessionId = (s) => typeof s === 'string' && /^[a-z0-9]{8,32}$/.test(s);
 
-/** Creates (or updates) a session from uploaded files. Shared by the MCP tool and the plain HTTP API the sidecar uses. */
-export async function openSession(env, origin, { files = [], file, animation, preview, session, schema, title }) {
+/**
+ * Creates (or updates) a session from uploaded files. Shared by the MCP tool and the plain HTTP API the sidecar
+ * uses. With `auth` a new session gets an owner token (returned once as `token`); updating an owned session
+ * needs that token.
+ */
+export async function openSession(env, origin, { files = [], file, animation, preview, session, schema, title, auth, ownerName, forkOf, base }, token) {
   if (!Array.isArray(files)) throw new Error('files must be an array');
   if (!schema && (!files.length || typeof file !== 'string')) throw new Error('files[] and file are required');
   const id = isSessionId(session) ? session : newId();
-  const r = await call(env, id, '/internal/open', { files, file, animation, preview, schema, title });
-  return { ...r, session: id, url: sessionUrl(env, origin, id) };
+  const url = sessionUrl(env, origin, id);
+  const r = await call(env, id, '/internal/open', { files, file, animation, preview, schema, title, auth, ownerName, forkOf, base, id, url }, token);
+  return { ...r, session: id, url };
 }
+
+/** The link that makes its opener the owner: the token rides in the #fragment, which never reaches a server. */
+export const ownerLink = (url, token) => (token ? `${url}#owner=${encodeURIComponent(token)}` : url);
 
 /** Controls the agent can present: two wires each – `preview` (anni applies it live) and `source` (applied to code on save). */
 const sourceSchema = z
@@ -101,20 +110,23 @@ export function createServer(env, origin) {
         'Opens a CSS animation (@keyframes) in anni, a web timeline editor where the user scrubs, drags keyframes and edits values and timing. ' +
         'anni is hosted, so pass FILE CONTENTS: read the .css (or .html with <style>) file yourself and include it, plus the HTML page that uses it ' +
         'and small assets it links (other css) so the preview works. Returns a link the user opens in their browser. ' +
-        'Afterwards call wait_for_save with the returned session id: it returns the edited file when the user saves, and you write it back to disk. ' +
-        'Pass `session` to update a session that is already open in a tab (e.g. after you changed the file).',
+        'Afterwards call wait_for_save with the returned session id and token: it returns the edited file when the user saves, and you write it back to disk. ' +
+        'Pass `session` and `token` to update a session that is already open in a tab (e.g. after you changed the file).',
       inputSchema: z.object({
         files: z.array(fileSchema).min(1).describe('The file with the @keyframes and, ideally, the HTML page that uses it plus linked CSS'),
         file: z.string().describe('Path (as given in files) of the file that contains the @keyframes to edit'),
         animation: z.string().optional().describe('Name of the @keyframes to select. Defaults to the first one.'),
         preview: z.string().optional().describe('Path (as given in files) of the HTML page to preview on. Defaults to an uploaded .html that references the file.'),
         session: z.string().optional().describe('Existing session id to reuse'),
+        token: z.string().optional().describe('Owner token of that session (from the first open_animation result)'),
+        owner_name: z.string().optional().describe("The user's name, shown to people who ask for access (e.g. from git config user.name)"),
       }),
     },
-    async ({ files, file, animation, preview, session }) => {
+    async ({ files, file, animation, preview, session, token, owner_name }) => {
       try {
-        const r = await openSession(env, origin, { files, file, animation, preview, session });
+        const r = await openSession(env, origin, { files, file, animation, preview, session, auth: true, ownerName: owner_name }, token);
         const id = r.session;
+        const owner = r.token || token;
         const list = r.animations
           .map((a) => `- ${a.name}${a.usage ? ` (used by ${a.usage.selector}, ${a.timing.duration}ms)` : ' (not used by any rule)'}`)
           .join('\n');
@@ -122,14 +134,16 @@ export function createServer(env, origin) {
           [
             `Opened "${r.animation}" from ${r.file} in anni.`,
             `Session: ${id}`,
-            `Link for the user: ${r.url}`,
+            ...(r.token ? [`Owner token (keep it for later calls on this session): ${r.token}`] : []),
+            `Link for the user (makes their browser the owner – give it only to them): ${ownerLink(r.url, owner)}`,
+            `Link others can use to ask for access: ${r.url}`,
             r.clients ? 'An editor tab is already open on this session and switched to it.' : 'Ask the user to open the link.',
             `Preview: ${r.preview ?? 'demo box (no HTML page among the files)'}`,
             '',
             'Animations in this file:',
             list,
             '',
-            `Next: call wait_for_save with session "${id}". When it returns saved=true, write its content to ${r.file} on disk.`,
+            `Next: call wait_for_save with session "${id}"${owner ? ' and the token' : ''}. When it returns saved=true, write its content to ${r.file} on disk.`,
           ].join('\n'),
         );
       } catch (e) {
@@ -147,16 +161,17 @@ export function createServer(env, origin) {
         'Write that content to the file on disk, tell the user, and call again if they keep editing. Returns saved=false on timeout – call again while the user is still working.',
       inputSchema: z.object({
         session: z.string().describe('Session id from open_animation'),
+        token: z.string().optional().describe('Owner token from open_animation'),
         since_rev: z.number().int().optional().describe('Only return a save newer than this revision (from a previous result). Defaults to the latest.'),
         timeout_seconds: z.number().int().min(1).optional().describe(WAIT_DESCRIPTION),
       }),
     },
-    async ({ session, since_rev, timeout_seconds }) => {
+    async ({ session, token, since_rev, timeout_seconds }) => {
       try {
-        const state = await call(env, session, '/internal/state');
+        const state = await call(env, session, '/internal/state', undefined, token);
         if (!state.hasSession) throw new Error(`Unknown session "${session}"`);
         const since = since_rev ?? state.rev;
-        const r = await call(env, session, `/internal/wait?since=${since}&timeout=${waitSeconds(timeout_seconds) * 1000}`);
+        const r = await call(env, session, `/internal/wait?since=${since}&timeout=${waitSeconds(timeout_seconds) * 1000}`, undefined, token);
         if (!r.saved) return text(`No save yet (timeout). The editor ${r.dirty ? 'has unsaved edits' : 'has no pending edits'}. Call wait_for_save again to keep waiting.`);
         const files = r.files || [{ path: r.file, content: r.content }];
         const manual = (r.changes || []).filter((c) => !c.applied);
@@ -190,20 +205,25 @@ export function createServer(env, origin) {
         files: z.array(fileSchema).optional().describe('Preview page and the files it links'),
         preview: z.string().optional().describe('Path (as given in files) of the HTML page to show'),
         session: z.string().optional().describe('Existing session id to update in place'),
+        token: z.string().optional().describe('Owner token of that session (from the first present result)'),
+        owner_name: z.string().optional().describe("The user's name, shown to people who ask for access"),
       }),
     },
-    async ({ schema, files = [], preview, session }) => {
+    async ({ schema, files = [], preview, session, token, owner_name }) => {
       try {
-        const r = await openSession(env, origin, { files, preview, session, schema, title: schema.title });
+        const r = await openSession(env, origin, { files, preview, session, schema, title: schema.title, auth: true, ownerName: owner_name }, token);
+        const owner = r.token || token;
         return text(
           [
             `Presented "${r.title}" (${r.controls} controls) in anni.`,
             `Session: ${r.session}`,
-            `Link for the user: ${r.url}`,
+            ...(r.token ? [`Owner token (keep it for later calls on this session): ${r.token}`] : []),
+            `Link for the user (makes their browser the owner – give it only to them): ${ownerLink(r.url, owner)}`,
+            `Link others can use to ask for access: ${r.url}`,
             r.clients ? 'An editor tab is already open on this session and switched to it.' : 'Ask the user to open the link.',
             `Preview: ${r.preview ?? 'none – controls only'}`,
             '',
-            `Next: call wait_for_changes with session "${r.session}"; apply the returned changes to the code using each change's source wire.`,
+            `Next: call wait_for_changes with session "${r.session}"${owner ? ' and the token' : ''}; apply the returned changes to the code using each change's source wire.`,
           ].join('\n'),
         );
       } catch (e) {
@@ -221,15 +241,16 @@ export function createServer(env, origin) {
         'Apply each one to the code at its source wire (find/replace or range). Returns saved=false on timeout – call again while the user is still working.',
       inputSchema: z.object({
         session: z.string().describe('Session id from present'),
+        token: z.string().optional().describe('Owner token from present'),
         since_rev: z.number().int().optional(),
         timeout_seconds: z.number().int().min(1).optional().describe(WAIT_DESCRIPTION),
       }),
     },
-    async ({ session, since_rev, timeout_seconds }) => {
+    async ({ session, token, since_rev, timeout_seconds }) => {
       try {
-        const state = await call(env, session, '/internal/state');
+        const state = await call(env, session, '/internal/state', undefined, token);
         if (!state.hasSession) throw new Error(`Unknown session "${session}"`);
-        const r = await call(env, session, `/internal/wait?since=${since_rev ?? state.rev}&timeout=${waitSeconds(timeout_seconds) * 1000}`);
+        const r = await call(env, session, `/internal/wait?since=${since_rev ?? state.rev}&timeout=${waitSeconds(timeout_seconds) * 1000}`, undefined, token);
         if (!r.saved) return text(`No save yet (timeout). The editor ${r.dirty ? 'has unsaved edits' : 'has no pending edits'}. Call wait_for_changes again to keep waiting.`);
         if (r.kind !== 'schema') throw new Error('This session is an animation session – use wait_for_save');
         return text(`Saved revision ${r.rev}. Changes:\n${JSON.stringify(r.changes, null, 2)}\n\nAll values now:\n${JSON.stringify(r.values)}`);
@@ -244,11 +265,32 @@ export function createServer(env, origin) {
     {
       title: 'Read anni editor state',
       description: 'Returns the animations of an anni session as CSS, including edits the user has not saved yet, and whether there are unsaved changes.',
-      inputSchema: z.object({ session: z.string().describe('Session id from open_animation') }),
+      inputSchema: z.object({ session: z.string().describe('Session id from open_animation'), token: z.string().optional().describe('Owner token from open_animation') }),
     },
-    async ({ session }) => {
+    async ({ session, token }) => {
       try {
-        return text((await call(env, session, '/internal/state')).text);
+        return text((await call(env, session, '/internal/state', undefined, token)).text);
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    'get_proposals',
+    {
+      title: 'Read changes exported from copies',
+      description:
+        'People who watched an anni session can edit a copy of it and export their changes back to it. Returns those exported change sets ' +
+        '(newest first), each a markdown brief with before → after values and a diff against the revision the copy started from. Apply them ' +
+        'to the code as the brief says: change only what is listed, keep everything else (including later changes), and ask the user about conflicts.',
+      inputSchema: z.object({ session: z.string().describe('Session id of the original session'), token: z.string().optional().describe('Owner token of that session') }),
+    },
+    async ({ session, token }) => {
+      try {
+        const r = await call(env, session, '/internal/proposals', undefined, token);
+        if (!r.proposals.length) return text('No changes have been exported from copies of this session.');
+        return text(r.proposals.map((p) => `=== From ${p.author}, ${new Date(p.at).toISOString()} (based on revision ${p.baseRev}; the session is now at revision ${r.rev}) ===\n\n${p.markdown}`).join('\n\n'));
       } catch (e) {
         return fail(e);
       }

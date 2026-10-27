@@ -65,8 +65,52 @@ const snapshot = () => JSON.stringify(S.model.animations);
 // Hosted sessions may live under /s/<id>/ on a shared origin; locally and on session subdomains BASE is ''.
 const BASE = location.pathname.match(/^\/s\/[^/]+/)?.[0] || '';
 
+/*
+ * Who this browser is to a hosted session. The owner link carries #owner=<token>&name=<name>; it is kept as a
+ * cookie (so the preview's own requests carry it too) and taken out of the address bar, so the link you
+ * then copy or share makes nobody else the owner. Guests get a random token of their own when they ask
+ * for access. TAB tells this tab apart from the owner's other tabs: only one of them edits.
+ */
+const randomToken = () => btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(24)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+// Kept per browser tab across reloads (sessionStorage), so a reloaded editing tab keeps editing; LOAD is this page load.
+const TAB = (() => {
+  try {
+    return sessionStorage.getItem('anni.tab') || (sessionStorage.setItem('anni.tab', randomToken()), sessionStorage.getItem('anni.tab'));
+  } catch {
+    return randomToken();
+  }
+})();
+const LOAD = randomToken();
+const getCookie = (name) => {
+  const m = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+  return m ? decodeURIComponent(m[1]) : null;
+};
+const setCookie = (name, value) =>
+  (document.cookie = `${name}=${encodeURIComponent(value)}; Path=${BASE}/; Max-Age=${60 * 60 * 24 * 30}; SameSite=Lax${location.protocol === 'https:' ? '; Secure' : ''}`);
+const tokenCookie = (name) => getCookie(name) || (setCookie(name, randomToken()), getCookie(name));
+const myName = () => {
+  try {
+    return localStorage.getItem('anni.name') || '';
+  } catch {
+    return '';
+  }
+};
+const saveName = (name) => {
+  try {
+    localStorage.setItem('anni.name', name);
+  } catch {}
+};
+{
+  const p = new URLSearchParams(location.hash.slice(1));
+  if (p.get('owner')) {
+    setCookie('anni_owner', p.get('owner'));
+    if (p.get('name')) saveName(p.get('name'));
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+}
+
 async function api(method, url, body) {
-  const res = await fetch(BASE + url, { method, headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) });
+  const res = await fetch(BASE + url, { method, headers: { 'Content-Type': 'application/json', 'x-anni-tab': TAB, 'x-anni-load': LOAD }, body: body && JSON.stringify(body) });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
@@ -90,6 +134,14 @@ function banner(content) {
 
 async function load({ keepTime = false } = {}) {
   const data = await api('GET', '/api/session');
+  // No owner yet (a session from before access control): this browser becomes its owner.
+  if (data.claimable) {
+    await api('POST', '/api/claim', { token: tokenCookie('anni_owner'), name: myName() || null });
+    return load({ keepTime });
+  }
+  if (data.locked) return showLock(data.locked);
+  stopLockPoll();
+  S.access = data.access || null; // hosted only: { role, editor, mode, owner, requests?, allowed? }
   S.session = data.session;
   S.hosted = !!data.hosted;
   const has = !!S.session;
@@ -104,7 +156,12 @@ async function load({ keepTime = false } = {}) {
     return;
   }
   stopAurora();
-  if (S.session.kind === 'schema') return loadSchema(data);
+  if (S.session.kind === 'schema') {
+    loadSchema(data);
+    applyRole();
+    if (S.hosted) listen();
+    return;
+  }
   S.schema = null;
   S.editorChanges = new Map();
   S.ehistory = [];
@@ -134,6 +191,8 @@ async function load({ keepTime = false } = {}) {
   renderAll();
   loadPreview();
   push();
+  applyRole();
+  if (S.hosted) listen();
 }
 
 /** Root of a hosted anni: nothing to edit here, show how an agent connects. */
@@ -153,10 +212,344 @@ function renderConnectCard(mcpUrl, { ttlDays = 7, tokenRequired = false } = {}) 
     h(
       'p',
       { class: 'muted small' },
-      `Files you open are stored in their session until it expires, ${ttlDays} days after the last activity, and are reachable by anyone with the link. Don't open secrets. Self-hosting is one `,
+      `Files you open are stored in their session until it expires, ${ttlDays} days after the last activity. Sessions are yours: others with the link have to ask for access (or you make the session public, or lock it), and only you edit. Self-hosting is one `,
       h('code', {}, 'wrangler deploy'),
       '.',
     ),
+  );
+}
+
+/* ---------- access: lock screen, roles, requests, watching (hosted only) ---------- */
+
+const MODE_INFO = {
+  public: { label: 'Public', hint: 'Anyone with the link can watch' },
+  request: { label: 'Request', hint: 'People ask, you let them in' },
+  locked: { label: 'Locked', hint: 'No new people – only you and who you let in' },
+};
+const LOCK_ICON = '<svg viewBox="0 0 12 14" width="11" height="13" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="1" y="6" width="10" height="7" rx="1"/><path d="M3.3 6V4.2a2.7 2.7 0 0 1 5.4 0V6"/></svg>';
+const OPEN_ICON = '<svg viewBox="0 0 12 14" width="11" height="13" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="1" y="6" width="10" height="7" rx="1"/><path d="M3.3 6V4.2a2.7 2.7 0 0 1 5.3-.6"/></svg>';
+
+let lockPoll = 0;
+function stopLockPoll() {
+  clearInterval(lockPoll);
+  lockPoll = 0;
+}
+
+/** A browser without access: what it may do depends on the mode. The page checks back every few seconds. */
+function showLock(lock) {
+  S.session = null;
+  S.model = null;
+  S.access = null;
+  events?.close();
+  events = null;
+  for (const id of ['#workspace', '#timeline', '#save', '#undo', '#redo', '#anim-select', '#view', '#access', '#dirty']) $(id).hidden = true;
+  $('#file').textContent = '';
+  banner(null);
+  accessBar(null);
+  $('#empty').hidden = false;
+  startAurora($('#empty'));
+  const owner = lock.owner || 'the person who shared it';
+  const logo = h('img', { class: 'logo big', src: 'brand/anni-logo.png', alt: 'anni' });
+  const card = $('.empty-card');
+  if (lock.mode === 'locked') {
+    card.replaceChildren(logo, h('h1', {}, 'This session is locked'), h('p', {}, `Only ${owner} can open it right now.`), h('p', { class: 'muted' }, `If you need it, ask ${lock.owner || 'them'} directly to switch it to “Request” or “Public”.`));
+  } else if (lock.request === 'pending') {
+    card.replaceChildren(logo, h('h1', {}, 'Request sent'), h('p', {}, `Waiting for ${owner} to let you in.`), h('p', { class: 'muted' }, 'This page opens by itself once you are in.'));
+  } else if (lock.request === 'denied') {
+    card.replaceChildren(logo, h('h1', {}, 'Request declined'), h('p', {}, `${lock.owner || 'The owner'} didn’t let you in. Ask them directly if that was a mistake.`));
+  } else {
+    const name = h('input', { value: myName(), placeholder: 'Your name', maxlength: 60, spellcheck: 'false' });
+    const note = h('input', { placeholder: 'Message (optional)', maxlength: 280 });
+    const send = async () => {
+      if (!name.value.trim()) return name.focus();
+      saveName(name.value.trim());
+      tokenCookie('anni_guest');
+      try {
+        await api('POST', '/api/request', { name: name.value.trim(), note: note.value.trim() });
+        showLock({ ...lock, request: 'pending' });
+      } catch (e) {
+        toast(e.message);
+      }
+    };
+    card.replaceChildren(
+      logo,
+      h('h1', {}, 'This session is private'),
+      h('p', {}, `It belongs to ${owner}. Ask for access to watch it.`),
+      h('div', { class: 'lock-form', onkeydown: (e) => e.key === 'Enter' && send() }, name, note, h('button', { class: 'chrome-btn', onclick: send }, 'Request access')),
+    );
+  }
+  if (!lockPoll) {
+    lockPoll = setInterval(async () => {
+      try {
+        const d = await api('GET', '/api/session');
+        if (!d.locked) return load();
+        if (d.locked.mode !== lock.mode || d.locked.request !== lock.request) showLock(d.locked);
+      } catch {}
+    }, 4000);
+  }
+}
+
+/** Editing rights: only the owner, from one tab. Everybody else watches – the inspector takes no input. */
+function applyRole() {
+  const a = S.access;
+  S.readonly = !!a && !a.editor;
+  document.body.classList.toggle('readonly', S.readonly);
+  if (S.readonly) S.dirty = false; // a watcher has nothing of its own to save
+  for (const id of ['#save', '#undo', '#redo']) $(id).hidden = !S.session || S.readonly;
+  showSaveState();
+  const btn = $('#access');
+  btn.hidden = a?.role !== 'owner';
+  const fork = S.session?.forkOf;
+  const exp = $('#export');
+  exp.hidden = !(fork && a?.editor);
+  if (fork) exp.title = `Send your changes to ${fork.owner || 'the original session'} and download them as a file a coding agent can apply`;
+  if (!a) return accessBar(null);
+  if (a.role === 'owner') {
+    const n = a.requests?.length || 0;
+    btn.innerHTML = `${a.mode === 'public' ? OPEN_ICON : LOCK_ICON}<span>${MODE_INFO[a.mode].label}</span>${n ? `<b class="count">${n}</b>` : ''}`;
+    btn.classList.toggle('alert', n > 0);
+    if ($('#access-pop')) renderAccessPop();
+  }
+  if (a.role === 'viewer') {
+    accessBar([h('span', {}, `View only – ${a.owner || 'the owner'} edits this session. To change something, edit your own copy.`), h('button', { class: 'primary', onclick: editCopy }, 'Edit a copy')]);
+  } else if (!a.editor) {
+    accessBar([h('span', {}, 'This session is being edited in another tab.'), h('button', { onclick: takeOver }, 'Edit here')]);
+  } else if (a.requests?.length) {
+    const r = a.requests[0];
+    const more = a.requests.length - 1;
+    accessBar([
+      h('span', {}, h('b', {}, r.name), ` asks to watch${r.note ? `: “${r.note}”` : ''}${more ? ` · ${more} more` : ''}`),
+      h('button', { class: 'primary', onclick: () => answer(r.id, true) }, 'Allow'),
+      h('button', { onclick: () => answer(r.id, false) }, 'Decline'),
+      more ? h('button', { class: 'ghost', onclick: () => toggleAccessPop(true) }, 'All requests') : null,
+    ]);
+  } else if (a.proposals?.some((p) => !p.read)) {
+    const fresh = a.proposals.filter((p) => !p.read);
+    const p = fresh[0];
+    accessBar([
+      h('span', {}, h('b', {}, p.author), ` exported changes from their copy: ${p.summary}${fresh.length > 1 ? ` · ${fresh.length - 1} more` : ''}`),
+      h('button', { class: 'primary', onclick: () => viewProposal(p.id) }, 'View'),
+      fresh.length > 1 ? h('button', { class: 'ghost', onclick: () => toggleAccessPop(true) }, 'All') : null,
+    ]);
+  } else accessBar(null);
+}
+
+/* Exported changes. A copy's owner exports: their change set goes to this session's owner as a proposal and
+   comes back to them as a file. Either way it is a .anni.md a coding agent can apply (get_proposals reads them too). */
+
+function downloadText(text, name) {
+  const a = h('a', { href: URL.createObjectURL(new Blob([text], { type: 'text/markdown' })), download: name });
+  document.body.append(a);
+  a.click();
+  setTimeout(() => (URL.revokeObjectURL(a.href), a.remove()), 1000);
+}
+const changesFileName = (file, at) => `${String(file || 'changes').split('/').pop().replace(/\.[^.]+$/, '')}-${new Date(at).toISOString().slice(0, 16).replace(/[-:T]/g, '')}.anni.md`;
+
+async function exportChanges() {
+  try {
+    if (S.dirty) await saveNow(); // the export is made from the saved state
+    const r = await api('POST', '/api/export', {});
+    downloadText(r.markdown, changesFileName(r.file, r.at));
+    toast(r.count ? `Exported ${r.summary}${r.delivered ? ` – sent to ${r.owner || 'the original session'} and downloaded` : ' – downloaded'}` : 'Nothing changed yet – exported an empty change set');
+  } catch (e) {
+    toast(e.message);
+  }
+}
+$('#export').onclick = exportChanges;
+
+/** The owner reads a proposal: the brief the coding agent gets, to copy, download or dismiss. */
+async function viewProposal(id) {
+  toggleAccessPop(false);
+  let p;
+  try {
+    p = await api('GET', `/api/proposal?id=${encodeURIComponent(id)}`);
+  } catch (e) {
+    return toast(e.message);
+  }
+  const close = () => $('#proposal-overlay')?.remove();
+  const behind = p.rev > p.baseRev ? ` · the session has been saved ${p.rev - p.baseRev}× since – the agent checks for conflicts` : '';
+  $('#proposal-overlay')?.remove();
+  document.body.append(
+    h(
+      'div',
+      { class: 'keys-backdrop', id: 'proposal-overlay', onclick: (e) => e.target === e.currentTarget && close() },
+      h(
+        'div',
+        { class: 'keys-panel proposal-panel', role: 'dialog', 'aria-label': `Changes from ${p.author}` },
+        h(
+          'header',
+          {},
+          h('h2', {}, `Changes from ${p.author}`),
+          h('span', { class: 'muted small' }, `based on revision ${p.baseRev}${behind}`),
+          h('span', { class: 'spacer' }),
+          h('button', { onclick: () => navigator.clipboard.writeText(p.markdown).then(() => toast('Copied – paste it to your coding agent')) }, 'Copy'),
+          h('button', { onclick: () => downloadText(p.markdown, changesFileName(S.session?.file, p.at)) }, 'Download'),
+          p.url ? h('a', { class: 'btn', href: p.url, target: '_blank', rel: 'noopener', title: 'Their copy – it may ask you for access' }, 'Open their copy') : null,
+          h('button', { class: 'danger', onclick: () => (close(), ownerAction('/api/proposal/dismiss', { id })) }, 'Dismiss'),
+          h('button', { class: 'ghost', title: 'Close (Esc)', onclick: close }, '×'),
+        ),
+        h('p', { class: 'proposal-hint' }, 'Give this to your coding agent – e.g. “apply these changes but keep my shaking animation”. With anni connected it can also read it itself (get_proposals).'),
+        h('pre', { class: 'proposal-md' }, p.markdown),
+      ),
+    ),
+  );
+}
+
+function accessBar(content) {
+  const el = $('#access-bar');
+  el.replaceChildren(...(content ? [content].flat().filter(Boolean) : []));
+  el.hidden = !content;
+}
+
+async function ownerAction(path, body) {
+  try {
+    const r = await api('POST', path, body);
+    if (r.access) S.access = r.access;
+    applyRole();
+  } catch (e) {
+    toast(e.message);
+  }
+}
+const answer = (guest, allow) => ownerAction('/api/answer', { guest, allow });
+
+/** The owner's access menu: mode, open requests, who has access, own name, share link. */
+function renderAccessPop() {
+  const a = S.access;
+  const pop = $('#access-pop');
+  if (!pop || !a) return;
+  const shareLink = `${location.origin}${BASE}/`;
+  const person = (g, actions) => h('li', {}, h('span', { class: 'who' }, g.name, g.note ? h('span', { class: 'muted' }, ` – “${g.note}”`) : null), ...actions);
+  const nameInput = h('input', { value: a.owner || myName(), placeholder: 'Your name', maxlength: 60, onchange: (e) => (saveName(e.target.value.trim()), ownerAction('/api/name', { name: e.target.value.trim() })) });
+  const parts = [
+    h('h3', {}, 'Who can open the link'),
+    h(
+      'div',
+      { class: 'modes' },
+      Object.entries(MODE_INFO).map(([mode, info]) =>
+        h('button', { class: `mode${a.mode === mode ? ' on' : ''}`, onclick: () => ownerAction('/api/access', { mode }) }, h('b', {}, info.label), h('span', {}, info.hint)),
+      ),
+    ),
+    a.requests?.length
+      ? h('section', {}, h('h3', {}, 'Requests'), h('ul', {}, a.requests.map((g) => person(g, [h('button', { class: 'primary', onclick: () => answer(g.id, true) }, 'Allow'), h('button', { onclick: () => answer(g.id, false) }, 'Decline')]))))
+      : null,
+    a.proposals?.length
+      ? h(
+          'section',
+          {},
+          h('h3', {}, 'Exported from copies'),
+          h(
+            'ul',
+            {},
+            a.proposals.map((p) =>
+              h(
+                'li',
+                { class: p.read ? '' : 'unread' },
+                h('span', { class: 'who', title: p.summary }, p.author, h('span', { class: 'muted' }, ` – ${p.summary}`)),
+                h('button', { class: p.read ? '' : 'primary', onclick: () => viewProposal(p.id) }, 'View'),
+              ),
+            ),
+          ),
+        )
+      : null,
+    h(
+      'section',
+      {},
+      h('h3', {}, 'Can watch'),
+      a.mode === 'public' ? h('p', { class: 'muted' }, 'Everyone with the link, while the session is public.') : null,
+      a.allowed?.length ? h('ul', {}, a.allowed.map((g) => person(g, [h('button', { onclick: () => ownerAction('/api/revoke', { guest: g.id }) }, 'Remove')]))) : a.mode !== 'public' ? h('p', { class: 'muted' }, 'Nobody else yet.') : null,
+    ),
+    h('section', {}, h('h3', {}, 'You'), h('label', { class: 'field' }, h('span', {}, 'Name'), nameInput), h('p', { class: 'muted' }, 'Shown to people who ask for access. Only you can edit; others watch and can edit a copy.')),
+    h('button', { class: 'chrome-btn share', onclick: () => navigator.clipboard.writeText(shareLink).then(() => toast('Link copied – people have to ask for access unless the session is public')) }, 'Copy link'),
+  ];
+  pop.replaceChildren(...parts.filter(Boolean)); // replaceChildren would print a null as "null"
+}
+
+function toggleAccessPop(open = !$('#access-pop')) {
+  $('#access-pop')?.remove();
+  if (!open || S.access?.role !== 'owner') return;
+  const r = $('#access').getBoundingClientRect();
+  const pop = h('div', { class: 'access-pop', id: 'access-pop', style: `top:${r.bottom + 6}px;right:${Math.max(8, innerWidth - r.right)}px` });
+  document.body.append(pop);
+  renderAccessPop();
+}
+$('#access').onclick = () => toggleAccessPop();
+document.addEventListener('pointerdown', (e) => {
+  if ($('#access-pop') && !e.target.closest('#access-pop, #access')) toggleAccessPop(false);
+});
+
+/** Watchers: a new session with the same files, owned by this browser, opens in place of this one. */
+async function editCopy() {
+  try {
+    const name = myName();
+    const r = await api('POST', '/api/fork', { name: name || null });
+    location.href = `${r.url}#owner=${encodeURIComponent(r.token)}${name ? `&name=${encodeURIComponent(name)}` : ''}`;
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+// A closing or reloading tab says goodbye, so the owner's next tab can edit right away.
+addEventListener('pagehide', () => {
+  if (S.hosted && S.access) navigator.sendBeacon(`${BASE}/api/bye?tab=${TAB}&load=${LOAD}`);
+});
+// The editing tab's heartbeat (the server gives editing to another owner tab after 15 s of silence); the
+// owner's other tabs check whether they can take over.
+setInterval(() => {
+  if (!S.session || S.access?.role !== 'owner') return;
+  if (S.access.editor) api('POST', '/api/alive', {}).then((r) => r.editor === false && refreshAccess()).catch(() => {});
+  else refreshAccess().catch(() => {});
+}, 5000);
+
+async function takeOver() {
+  await api('POST', '/api/take', {});
+  load({ keepTime: true });
+}
+
+/** Mode, requests or the editing tab changed. */
+async function refreshAccess() {
+  const d = await api('GET', '/api/session');
+  if (d.locked) return showLock(d.locked);
+  if (!S.session) return load();
+  const wasEditor = S.access?.editor;
+  S.access = d.access || null;
+  if (wasEditor === false && S.access?.editor) return load({ keepTime: true }); // this tab edits now: start from the server's state
+  applyRole();
+}
+
+/** Watching tabs follow the editing tab's live state. */
+let following = false;
+async function followLiveState() {
+  if (!S.readonly || following) return;
+  following = true;
+  try {
+    const d = await api('GET', '/api/session');
+    if (d.locked) return showLock(d.locked);
+    if (S.schema && d.values) {
+      S.values = { ...d.values };
+      renderSchemaPanel();
+      applySchemaPreview();
+    } else if (d.model && S.model && JSON.stringify(d.model.animations) !== snapshot()) {
+      S.model = d.model;
+      if (!anim()) S.name = S.model.animations[0].name;
+      if (S.sel && anim().keyframes[S.sel.bi]?.offsets[S.sel.oi] === undefined) S.sel = null;
+      renderAll();
+      push();
+    }
+  } finally {
+    following = false;
+  }
+}
+
+// Watchers can look, scrub and select, but no field, button or slider of the panel takes input.
+for (const type of ['pointerdown', 'click', 'keydown', 'beforeinput', 'input', 'change']) {
+  $('#inspector').addEventListener(
+    type,
+    (e) => {
+      if (!S.readonly) return;
+      e.preventDefault();
+      e.stopPropagation();
+    },
+    true,
   );
 }
 
@@ -824,6 +1217,7 @@ function commit() {
 
 /** Applies an edit. `render` controls what gets redrawn (inputs re-render less to keep focus). */
 function change(fn, { render = 'all' } = {}) {
+  if (S.readonly) return; // watchers don't edit
   if (S.pendingCommit !== false) {
     if (S.pendingCommit === true) commit();
     S.pendingCommit = 'done';
@@ -843,7 +1237,7 @@ function afterChange(render = 'all') {
 }
 
 function restore(entry, from, to) {
-  if (!entry) return;
+  if (!entry || S.readonly) return;
   to.push({ snap: snapshot(), sel: S.sel, picks: S.picks, name: S.name, sceneLen: S.sceneLen });
   S.model.animations = JSON.parse(entry.snap);
   S.sel = entry.sel;
@@ -963,6 +1357,7 @@ function select(bi, oi, { seek = true, at } = {}) {
 }
 
 function addKeyframe(p, prop, g) {
+  if (S.readonly) return;
   const a = anim();
   p = Math.round(p * 10) / 10;
   const at = g ? g.delay + (p / 100) * g.duration : undefined;
@@ -1130,7 +1525,7 @@ function applyAnimation(name, selector) {
 
 function deleteSelected() {
   const list = picks();
-  if (!list.length) return;
+  if (!list.length || S.readonly) return;
   // Highest index first, so removing a keyframe never shifts one that is still to be removed.
   const order = [...list].sort((p, q) => q.bi - p.bi || q.oi - p.oi);
   change(() => {
@@ -1206,6 +1601,7 @@ function copySelected({ cut = false } = {}) {
  * shared with other offsets (`0%, 100% {}`) is split first so only this one changes. `items` defaults to the clipboard.
  */
 function pasteAtPlayhead(items = S.clip?.items) {
+  if (S.readonly) return;
   if (!items?.length) return toast('Nothing to paste – select a keyframe and copy it first');
   const a = anim();
   const p0 = playheadPct();
@@ -1340,7 +1736,7 @@ function splitSelected() {
 
 /** Save button / ⌘S. While the request runs the status says "saving …" instead of "unsaved", and Save is off. */
 async function saveNow() {
-  if (!S.session || S.saving) return;
+  if (!S.session || S.saving || S.readonly) return;
   S.saving = true;
   showSaveState();
   try {
@@ -1353,7 +1749,7 @@ async function saveNow() {
 
 function showSaveState() {
   const el = $('#dirty');
-  el.hidden = !S.dirty && !S.saving;
+  el.hidden = S.readonly || (!S.dirty && !S.saving);
   el.textContent = S.saving ? 'saving …' : '● unsaved';
   el.classList.toggle('saving', !!S.saving);
   $('#save').disabled = !!S.saving;
@@ -2484,6 +2880,11 @@ function startDrag(e, g, bi, oi) {
   if (e.button !== 0) return;
   e.stopPropagation();
   e.preventDefault();
+  if (S.readonly) {
+    // Watchers select and seek, they don't move.
+    if (g.name !== S.name) setAnimation(g.name);
+    return select(bi, oi, { at: g.delay + (anim().keyframes[bi].offsets[oi] / 100) * g.duration });
+  }
   const rect = e.currentTarget.parentElement.getBoundingClientRect();
   const key = pickKey({ name: g.name, bi, oi });
   const before = picks();
@@ -2834,6 +3235,7 @@ function updatePlayhead() {
  * moves the whole selection along with it, the same way a drag does.
  */
 function moveSelectionTo(v) {
+  if (S.readonly) return false; // watchers only move the playhead
   const list = picks();
   const g = list.length && S.groups?.find((x) => x.anim && x.name === S.name);
   if (!g) return false;
@@ -2863,6 +3265,12 @@ $('#t-dur').addEventListener('change', (e) => {
   if (Number.isNaN(v) || !S.model) return;
   const len = Math.max(1, Math.round(v));
   if (len === (S.sceneLen || 0)) return;
+  if (S.readonly) {
+    // Watchers may make the view longer or shorter; scaling animations would be an edit.
+    S.sceneLen = len;
+    resetTimelineView();
+    return renderTimeline();
+  }
   const old = sceneDur();
   let scaled = 0;
   // One undo step. A longer length only adds room; a shorter one scales every animation that would end past it.
@@ -3191,6 +3599,10 @@ addEventListener(
   'keydown',
   (e) => {
     if (e.target.matches?.('input, select, textarea')) return;
+    if (e.key === 'Escape' && $('#proposal-overlay')) {
+      e.stopImmediatePropagation();
+      return $('#proposal-overlay').remove();
+    }
     const open = !!$('#keys-overlay');
     if (e.key === '?' || (open && e.key === 'Escape')) {
       e.preventDefault();
@@ -3334,7 +3746,7 @@ function jumpToKeyframe(dir) {
 }
 
 addEventListener('beforeunload', (e) => {
-  if (S.dirty) e.preventDefault();
+  if (S.dirty && !S.readonly) e.preventDefault();
 });
 
 $('#prop-list').replaceChildren(...KNOWN.map((p) => h('option', { value: p })));
@@ -3372,8 +3784,10 @@ let events;
 /** Server events (agent opened something, file changed on disk). The hosted root page has no session to follow. */
 function listen() {
   if (events) return;
-  events = new EventSource(`${BASE}/api/events`);
+  events = new EventSource(`${BASE}/api/events?tab=${TAB}&load=${LOAD}`); // EventSource can't send headers
   events.addEventListener('version', (e) => checkVersion(JSON.parse(e.data).version));
+  events.addEventListener('access', () => refreshAccess().catch(() => {}));
+  events.addEventListener('live', () => followLiveState().catch(() => {}));
   events.addEventListener('session', () => load());
   events.addEventListener('external-change', () => {
     if (!S.dirty) return load({ keepTime: true }).then(() => toast('File changed on disk – reloaded'));

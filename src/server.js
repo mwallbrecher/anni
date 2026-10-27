@@ -273,7 +273,8 @@ export function startServer(port = PORT) {
 }
 
 export function openBrowser(url) {
+  // cmd.exe would read & (e.g. in "#owner=…&name=…") as a command separator: escape it with ^.
   const [cmd, args] =
-    process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
+    process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url.replace(/[&^|<>]/g, '^$&')]] : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
   spawn(cmd, args, { detached: true, stdio: 'ignore' }).unref();
 }

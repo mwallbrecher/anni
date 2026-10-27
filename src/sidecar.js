@@ -3,6 +3,7 @@
 // back short diffs: this process reads the files, uploads them to anni over HTTP, opens the
 // browser tab, and writes the edited file to disk itself when the user saves. File bytes never
 // travel through the model's context. Never write to stdout here: it is the MCP channel.
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -26,12 +27,37 @@ const API_TIMEOUT_MS = 55_000;
 
 class ApiTimeout extends Error {}
 
-async function api(method, route, body) {
+/*
+ * Session ownership: new sessions are created with { auth: true } and come back with an owner token. The
+ * browser tab is opened with it in the #fragment (that browser becomes the owner; others have to ask), and
+ * every call about the session sends it as x-anni-owner. The owner's name for access requests is the
+ * project's git user.name, if there is one.
+ */
+let gitName;
+function ownerName() {
+  if (gitName === undefined) {
+    try {
+      gitName = execFileSync('git', ['config', 'user.name'], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null;
+    } catch {
+      gitName = null;
+    }
+  }
+  return gitName;
+}
+const tokenOf = (session) => sessions.get(session)?.token;
+function ownerLink(url, token) {
+  if (!token) return url;
+  const name = ownerName();
+  return `${url}#owner=${encodeURIComponent(token)}${name ? `&name=${encodeURIComponent(name)}` : ''}`;
+}
+
+async function api(method, route, body, token) {
   let res;
   let data;
   try {
     const headers = { 'Content-Type': 'application/json' };
     if (process.env.ANNI_TOKEN) headers.Authorization = `Bearer ${process.env.ANNI_TOKEN}`; // private instances
+    if (token) headers['x-anni-owner'] = token;
     const signal = AbortSignal.timeout(API_TIMEOUT_MS);
     res = await fetch(ANNI_URL + route, { method, headers, body: body && JSON.stringify(body), signal });
     data = await res.json().catch((e) => {
@@ -49,7 +75,7 @@ async function api(method, route, body) {
 /** Long-polls a session for a save. A slow anni counts as "nothing saved yet", so callers simply wait again. */
 async function waitApi(session, rev, seconds) {
   try {
-    return await api('GET', `/api/sessions/${session}/wait?since=${rev}&timeout=${waitSeconds(seconds) * 1000}`);
+    return await api('GET', `/api/sessions/${session}/wait?since=${rev}&timeout=${waitSeconds(seconds) * 1000}`, undefined, tokenOf(session));
   } catch (e) {
     if (e instanceof ApiTimeout) return { saved: false, late: true };
     throw e;
@@ -174,16 +200,21 @@ async function openAnimation({ file, animation, preview, extra_files = [], sessi
   const prev = /\.html?$/i.test(abs) ? abs : preview ? path.resolve(preview) : findPreviewFor(abs);
   const b = bundle([abs, ...(prev ? [prev, ...linkedAssets(prev)] : []), ...extra_files]);
   const { files, rel } = b;
-  const r = await api('POST', '/api/sessions', { files, file: rel(abs), animation, preview: prev ? rel(prev) : undefined, session });
+  const r = await api('POST', '/api/sessions', { files, file: rel(abs), animation, preview: prev ? rel(prev) : undefined, session, auth: true, ownerName: ownerName() }, tokenOf(session));
+  const token = r.token || tokenOf(session);
   const local = Object.fromEntries(b.abs.map((p) => [rel(p), p]));
   const uploaded = Object.fromEntries(files.filter((f) => !f.encoding).map((f) => [f.path, f.content]));
-  sessions.set(r.session, { file: abs, rel: rel(abs), uploaded, local, rev: r.rev });
+  sessions.set(r.session, { file: abs, rel: rel(abs), uploaded, local, rev: r.rev, token });
   lastSession = r.session;
   const browser = !r.clients && !process.env.ANNI_NO_BROWSER;
-  if (browser) openBrowser(r.url);
+  if (browser) openBrowser(ownerLink(r.url, token));
   const lines = [
     `Opened "${r.animation}" from ${abs} in anni: ${r.url}`,
-    r.clients ? 'The editor tab that was already open switched to it.' : browser ? 'Opened a new browser tab (share the link if it did not appear).' : 'No browser tab opened (ANNI_NO_BROWSER) – open the link.',
+    r.clients
+      ? 'The editor tab that was already open switched to it.'
+      : browser
+        ? "Opened it in the user's browser as the owner. Others who get the link above have to ask for access."
+        : `No browser tab opened (ANNI_NO_BROWSER) – the user opens this owner link: ${ownerLink(r.url, token)}`,
     `Preview: ${prev ?? 'demo box (no HTML page found)'} · uploaded ${files.length} file${files.length > 1 ? 's' : ''}${r.skipped?.length ? ` · skipped (too large): ${r.skipped.join(', ')}` : ''}`,
     `Session: ${r.session}`,
     '',
@@ -466,14 +497,20 @@ server.registerTool(
       const prev = preview ? path.resolve(preview) : files.map((p) => path.resolve(p)).find((p) => /\.html?$/i.test(p)) || null;
       const all = [...files, ...(prev ? [prev, ...linkedAssets(prev)] : [])];
       const b = bundle(all);
-      const r = await api('POST', '/api/sessions', { files: b.files, preview: prev ? b.rel(prev) : undefined, schema, title: schema.title, session });
-      sessions.set(r.session, { kind: 'schema', cwd: process.cwd(), rev: r.rev });
+      const r = await api('POST', '/api/sessions', { files: b.files, preview: prev ? b.rel(prev) : undefined, schema, title: schema.title, session, auth: true, ownerName: ownerName() }, tokenOf(session));
+      const token = r.token || tokenOf(session);
+      sessions.set(r.session, { kind: 'schema', cwd: process.cwd(), rev: r.rev, token });
       lastSession = r.session;
-      if (!r.clients && !process.env.ANNI_NO_BROWSER) openBrowser(r.url);
+      const browser = !r.clients && !process.env.ANNI_NO_BROWSER;
+      if (browser) openBrowser(ownerLink(r.url, token));
       return text(
         [
           `Presented "${r.title}" (${r.controls} controls) in anni: ${r.url}`,
-          r.clients ? 'The editor tab that was already open switched to it.' : 'Opened a new browser tab (share the link if it did not appear).',
+          r.clients
+            ? 'The editor tab that was already open switched to it.'
+            : browser
+              ? "Opened it in the user's browser as the owner. Others who get the link above have to ask for access."
+              : `No browser tab opened (ANNI_NO_BROWSER) – the user opens this owner link: ${ownerLink(r.url, token)}`,
           `Preview: ${prev ?? 'none – controls only'}${b.files.length ? ` · uploaded ${b.files.length} file${b.files.length > 1 ? 's' : ''}` : ''}`,
           `Session: ${r.session}`,
           '',
@@ -538,7 +575,29 @@ server.registerTool(
   async ({ session = lastSession }) => {
     try {
       if (!session) throw new Error('No session open – call open_animation first');
-      return text((await api('GET', `/api/sessions/${session}/state`)).text);
+      return text((await api('GET', `/api/sessions/${session}/state`, undefined, tokenOf(session))).text);
+    } catch (e) {
+      return fail(e);
+    }
+  },
+);
+
+server.registerTool(
+  'get_proposals',
+  {
+    title: 'Read changes exported from copies',
+    description:
+      'People who watched the anni session can edit a copy of it and export their changes back. Returns those change sets (newest first): ' +
+      'a markdown brief each, with before → after values and a diff against the revision the copy started from. Apply them to the code as ' +
+      'the brief says – change only what is listed, keep everything else (including later changes), and ask the user about conflicts.',
+    inputSchema: { session: z.string().optional().describe('Session id (defaults to the last opened one)') },
+  },
+  async ({ session = lastSession }) => {
+    try {
+      if (!session) throw new Error('No session open – call open_animation first');
+      const r = await api('GET', `/api/sessions/${session}/proposals`, undefined, tokenOf(session));
+      if (!r.proposals.length) return text('No changes have been exported from copies of this session.');
+      return text(r.proposals.map((p) => `=== From ${p.author}, ${new Date(p.at).toISOString()} (based on revision ${p.baseRev}; the session is now at revision ${r.rev}) ===\n\n${p.markdown}`).join('\n\n'));
     } catch (e) {
       return fail(e);
     }

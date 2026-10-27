@@ -87,9 +87,29 @@ with a source wire to your files and returns the diffs; changes without one are 
 endpoint the agent receives `{id, from, to, source}` and applies them itself.
 
 Sessions are unguessable ids; there are no accounts. A session – the files you opened included – is wiped
-**7 days after its last activity**, and anyone with the link can see it until then: don't open secrets, and self-host
-for anything sensitive. Uploads are capped (1.5 MB per file, 24 MB per session, 300 files). The HTTP API the sidecar
-uses is plain JSON: `POST /api/sessions`, `GET /api/sessions/<id>/wait?since=&timeout=`, `GET /api/sessions/<id>/state`.
+**7 days after its last activity**. Uploads are capped (1.5 MB per file, 24 MB per session, 300 files). The HTTP API
+the sidecar uses is plain JSON: `POST /api/sessions` (`auth: true` returns an owner token), then
+`GET /api/sessions/<id>/wait?since=&timeout=` and `GET /api/sessions/<id>/state` with the token as `x-anni-owner`.
+
+**Who sees a session.** The browser that opens the agent's link becomes the session's **owner**: the sidecar opens it
+with an owner token in the `#fragment` (never sent to a server), the editor keeps it as a cookie and drops it from the
+address bar, and the agent sends the same token on its own calls. The owner's name comes from `git config user.name`.
+From the lock button in the top bar the owner picks who else may open the plain link:
+
+- **Request** (default for new sessions) – others see a lock screen and can ask for access; the owner allows or
+  declines from the top bar and can remove people again.
+- **Public** – anyone with the link watches.
+- **Locked** – no new people; nobody can ask.
+
+Only the owner edits, from one tab at a time (another tab of theirs can take over). Everybody else watches live and
+can **Edit a copy**: a new session with the same files (as last saved) that they own. A copy remembers the revision it
+started from; **Export changes** in the copy writes what changed since then – timing, moved keyframes, every value as
+*before → after*, the resulting CSS, a diff – as an `.anni.md` brief for a coding agent. It is downloaded and sent to
+the original session, whose owner sees it in the top bar (view, copy, download). The owner's agent can read these
+proposals with `get_proposals` and apply them to code that may have moved on ("apply Lena's changes but keep my shaking
+animation"): the brief tells it to change only what is listed and to ask when a *before* value no longer matches. The token belongs to the browser – another
+browser or a private window is a guest until the owner lets it in. Sessions from before access control, or from a
+sidecar older than this, have no owner yet: the first browser that opens them claims them.
 
 **Private instance:** `wrangler secret put ANNI_TOKEN --env production` makes `/mcp` and the session API require
 `Authorization: Bearer <token>`. The sidecar sends it from the `ANNI_TOKEN` environment variable; for the remote

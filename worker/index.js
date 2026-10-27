@@ -47,9 +47,26 @@ export default {
       // object that is still running an older deploy (an open tab keeps it alive) must not hand out its editor.
       if (request.method === 'GET' && isEditorAsset(inner.pathname)) return editorAsset(env, request, inner.pathname);
       if (inner.pathname === '/api/version') return json({ version: versionOf(env) });
+      // The agent side of a session is reached through /api/sessions/<id>/… and /mcp only, never by its URL.
+      if (inner.pathname.startsWith('/internal/') || inner.pathname === '/export' || inner.pathname === '/proposal') return json({ error: 'Not found' }, 404);
       const headers = new Headers(request.headers);
       headers.set('x-anni-base', loc.base);
       headers.set('x-anni-version', versionOf(env));
+      // "Edit a copy": whoever may watch this session gets a new one with the same files, as its owner.
+      if (inner.pathname === '/api/fork' && request.method === 'POST') {
+        try {
+          const res = await sessionStub(env, loc.id).fetch(new Request('https://session.invalid/export', { headers }));
+          const data = await res.json();
+          if (!res.ok) return json(data, res.status);
+          const { name } = await request.json().catch(() => ({}));
+          // The copy remembers where it came from and the state it started from, to export changes against.
+          const base = data.schema ? { values: Object.fromEntries(data.schema.groups.flatMap((g) => g.controls).map((c) => [c.id, String(c.value)])) } : { file: data.file, content: data.files.find((f) => f.path === data.file)?.content };
+          const r = await openSession(env, url.origin, { ...data, auth: true, ownerName: name, forkOf: { session: loc.id, rev: data.rev, owner: data.owner }, base });
+          return json({ url: r.url, token: r.token, session: r.session });
+        } catch (e) {
+          return json({ error: e.message }, 400);
+        }
+      }
       const body = request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.arrayBuffer();
       const send = () => sessionStub(env, loc.id).fetch(new Request(inner, { method: request.method, headers, body, redirect: 'manual' }));
       try {
@@ -64,18 +81,21 @@ export default {
       })(request, env, ctx);
     }
     // Plain HTTP session API, used by the local sidecar (src/sidecar.js) so file bytes never pass through the model.
+    // A session's owner token travels as x-anni-owner (new sessions: { auth: true } returns one).
+    const ownerToken = request.headers.get('x-anni-owner') || undefined;
     if (url.pathname === '/api/sessions' && request.method === 'POST') {
       try {
-        return json(await openSession(env, url.origin, await request.json()));
+        return json(await openSession(env, url.origin, await request.json(), ownerToken));
       } catch (e) {
         return json({ error: e.message }, 400);
       }
     }
-    const sm = url.pathname.match(/^\/api\/sessions\/([a-z0-9]+)\/(wait|state)$/);
+    const sm = url.pathname.match(/^\/api\/sessions\/([a-z0-9]+)\/(wait|state|proposals)$/);
     if (sm && request.method === 'GET') {
       if (!isSessionId(sm[1])) return json({ error: 'Bad session id' }, 400);
       try {
-        return json(await call(env, sm[1], sm[2] === 'wait' ? `/internal/wait?${url.searchParams}` : '/internal/state'));
+        const path = sm[2] === 'wait' ? `/internal/wait?${url.searchParams}` : `/internal/${sm[2]}`;
+        return json(await call(env, sm[1], path, undefined, ownerToken));
       } catch (e) {
         return json({ error: e.message }, 400);
       }

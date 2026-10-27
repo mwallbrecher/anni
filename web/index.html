@@ -20,6 +20,8 @@
       <button data-view="animate" title="Timeline and keyframes">Animate</button>
     </div>
     <div class="spacer"></div>
+    <button class="ghost" id="export" hidden>Export changes</button>
+    <button class="ghost" id="access" title="Who can open this session" hidden></button>
     <button class="ghost" id="undo" title="Undo (Ctrl+Z)">↶</button>
     <button class="ghost" id="redo" title="Redo (Ctrl+Shift+Z)">↷</button>
     <span class="dirty" id="dirty" hidden>● unsaved</span>
@@ -29,7 +31,10 @@
     </button>
   </header>
 
-  <div class="banner" id="banner" hidden></div>
+  <div id="bars">
+    <div class="banner" id="banner" hidden></div>
+    <div class="banner access-bar" id="access-bar" hidden></div>
+  </div>
 
   <main class="workspace" id="workspace" hidden>
     <section class="stage">

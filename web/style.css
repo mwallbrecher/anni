@@ -152,7 +152,7 @@ code { font-family: var(--mono); background: var(--panel-2); padding: 1px 5px; b
 
 /* Explicit rows: hidden children (banner, timeline) must not shift the others into the wrong track. */
 .topbar { grid-row: 1; }
-.banner { grid-row: 2; }
+#bars { grid-row: 2; } /* the general banner and the access bar */
 .workspace { grid-row: 3; }
 .timeline { grid-row: 4; }
 
@@ -439,7 +439,7 @@ iframe { width: 100%; height: 100%; border: 0; display: block; }
 
 /* empty state & toast */
 /* Landing page: black, with the ASCII aurora (web/aurora.js) behind the card – only the glyphs carry colour. */
-.empty { grid-row: 2 / -1; display: grid; place-items: center; padding: 24px; position: relative; overflow: hidden; isolation: isolate; background: #0a0a0a; }
+.empty { grid-row: 2 / -1; grid-column: 1; /* over the (empty) #bars row, not in an extra column */ display: grid; place-items: center; padding: 24px; position: relative; overflow: hidden; isolation: isolate; background: #0a0a0a; }
 .empty-card { text-align: center; max-width: 460px; position: relative; z-index: 1; }
 .aurora-ascii { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
 .empty-card h1 { font-family: var(--display); font-size: 20px; font-weight: 400; margin: 0 0 10px; color: var(--bright); }
@@ -509,3 +509,44 @@ button.primary { color: var(--offwhite); }
 .combo .mouse .where { color: var(--muted); }
 .combo .plus, .keys-cat .or { font-size: 10px; color: var(--muted); }
 .keys-cat .or { padding: 0 2px; }
+
+/* access: owner's button and menu, lock screen, watching */
+#access { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); padding: 0 8px; }
+#access:hover { color: var(--text); }
+#access.alert { color: var(--accent); }
+#access .count { min-width: 16px; height: 16px; padding: 0 4px; display: inline-grid; place-items: center; font-size: 10px; color: #fff; background: var(--accent); border-radius: 8px; }
+.access-pop {
+  position: fixed; z-index: 25; width: 320px; max-height: calc(100vh - 80px); overflow: auto; padding: 12px 14px 14px;
+  background: var(--panel); border: 1px solid var(--line-2); box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+.access-pop h3 { margin: 12px 0 6px; font-family: var(--display); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); }
+.access-pop h3:first-child { margin-top: 0; }
+.access-pop .modes { display: grid; gap: 4px; }
+.access-pop .mode { height: auto; display: grid; justify-items: start; gap: 1px; padding: 6px 8px; text-align: left; border: 1px solid var(--line); }
+.access-pop .mode b { font-weight: 500; color: var(--text); }
+.access-pop .mode span { font-size: 11px; color: var(--muted); }
+.access-pop .mode.on { border-color: var(--accent); background: var(--accent-soft); }
+.access-pop ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.access-pop li { display: flex; align-items: center; gap: 6px; }
+.access-pop li .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.access-pop p { margin: 4px 0; font-size: 11px; }
+.access-pop .field input { width: 100%; }
+.access-pop .share { width: 100%; margin-top: 14px; }
+.access-bar { background: var(--accent-soft); border-bottom-color: rgba(233, 113, 48, 0.4); color: var(--peach); }
+.access-bar b { color: var(--bright); font-weight: 600; }
+.lock-form { display: grid; gap: 8px; margin: 18px auto 0; max-width: 300px; }
+.lock-form input { height: 32px; padding: 0 10px; }
+body.readonly .inspector { opacity: 0.75; }
+body.readonly .inspector :is(input, select, button, textarea) { cursor: default; }
+body.readonly #add-kf { display: none; } /* watchers add nothing */
+
+/* exported changes: the copy's export button, the owner's viewer */
+#export { font-size: 11px; color: var(--peach); border: 1px solid rgba(246, 211, 191, 0.35); padding: 0 10px; }
+#export:hover { color: var(--bright); border-color: var(--peach); }
+.access-pop li.unread .who { color: var(--bright); }
+.proposal-panel { width: min(920px, 100%); display: grid; grid-template-rows: auto auto 1fr; }
+.proposal-panel header { gap: 8px; }
+.proposal-panel header .small { font-size: 11px; }
+.proposal-panel a.btn { display: inline-grid; place-items: center; height: 24px; padding: 0 8px; color: var(--text); text-decoration: none; border: 1px solid var(--line-2); }
+.proposal-hint { margin: 0; padding: 10px 16px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--line); }
+.proposal-md { margin: 0; padding: 14px 16px; overflow: auto; font-family: var(--mono); font-size: 12px; line-height: 1.55; white-space: pre-wrap; color: var(--text); user-select: text; -webkit-user-select: text; }
