@@ -197,7 +197,7 @@ function loadSchema(data) {
 }
 
 function renderSchemaHeader() {
-  $('#dirty').hidden = !S.dirty;
+  showSaveState();
   $('#undo').disabled = !S.vhistory.length;
   $('#redo').disabled = !S.vfuture.length;
   document.title = `${S.dirty ? '● ' : ''}${S.session.title} · anni`;
@@ -1334,9 +1334,28 @@ function splitSelected() {
   select(a.keyframes.length - 1, 0);
 }
 
+/** Save button / ⌘S. While the request runs the status says "saving …" instead of "unsaved", and Save is off. */
 async function saveNow() {
-  if (!S.session) return;
-  if (S.schema) return saveSchema();
+  if (!S.session || S.saving) return;
+  S.saving = true;
+  showSaveState();
+  try {
+    return await (S.schema ? saveSchema() : saveModel());
+  } finally {
+    S.saving = false;
+    showSaveState();
+  }
+}
+
+function showSaveState() {
+  const el = $('#dirty');
+  el.hidden = !S.dirty && !S.saving;
+  el.textContent = S.saving ? 'saving …' : '● unsaved';
+  el.classList.toggle('saving', !!S.saving);
+  $('#save').disabled = !!S.saving;
+}
+
+async function saveModel() {
   // The saved file is re-read, so keyframe indices may change: remember the selection by offset.
   const kept = picks().map((p) => ({ name: p.name, o: animBy(p.name).keyframes[p.bi].offsets[p.oi], primary: p.name === S.name && p.bi === S.sel.bi && p.oi === S.sel.oi }));
   try {
@@ -1393,7 +1412,7 @@ function renderHeader() {
   const sel = $('#anim-select');
   sel.replaceChildren(...S.model.animations.map((a) => h('option', { value: a.name, selected: a.name === S.name }, `@keyframes ${a.name}`)));
   for (const b of $('#view').children) b.classList.toggle('on', b.dataset.view === S.mode2);
-  $('#dirty').hidden = !S.dirty;
+  showSaveState();
   const editing = S.mode2 === 'editor';
   $('#undo').disabled = editing ? !S.ehistory.length : !S.history.length;
   $('#redo').disabled = editing ? !S.efuture.length : !S.future.length;
@@ -2438,11 +2457,20 @@ function followPointer(e, onMove, onEnd) {
   addEventListener('pointercancel', end);
 }
 
+/**
+ * Scrubbing in the ruler. Within 8 px of a labelled tick (0, 200 ms, 1 s …) or the end, the playhead snaps onto
+ * it; elsewhere it lands on whole ms. ⌘/Ctrl held: no snapping.
+ */
 function startScrub(e, lane) {
   if (e.button !== 0) return;
   const rect = lane.getBoundingClientRect();
   const move = (ev) => {
-    S.t = xTime(laneX(ev, rect, true));
+    const raw = xTime(laneX(ev, rect, true));
+    const step = niceStep(viewSpan()); // the ruler's own tick spacing
+    const end = viewStart() + viewSpan();
+    const near = (t) => (Math.abs(raw - t) / viewSpan()) * rect.width <= 8;
+    const tick = Math.round(raw / step) * step;
+    S.t = ev.metaKey || ev.ctrlKey ? Math.round(raw) : near(tick) ? tick : near(end) ? end : Math.round(raw);
     updatePlayhead();
   };
   move(e);
@@ -2900,6 +2928,155 @@ $('#add-kf').onclick = () => addKeyframe(playheadPct());
 $('#mode').onclick = (e) => e.target.dataset.mode && setMode(e.target.dataset.mode);
 $('#pick').onclick = () => setPicking(!S.picking);
 $('#anim-select').onchange = (e) => setAnimation(e.target.value);
+
+/* ---------- shortcuts overview (keyboard button top right, or ?) ---------- */
+
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+const KEY_NAMES = { Mod: IS_MAC ? '⌘' : 'Ctrl', Alt: IS_MAC ? '⌥' : 'Alt', Shift: IS_MAC ? '⇧' : 'Shift', Del: IS_MAC ? '⌫' : 'Del' };
+
+/*
+ * Every control, by category. A row has one or more alternatives ("or"); an alternative is keys joined by
+ * "+". Words in [brackets] are mouse actions, drawn without a key frame.
+ */
+const SHORTCUTS = [
+  {
+    title: 'General',
+    rows: [
+      [['Mod+S'], 'Save to the file'],
+      [['Mod+Z'], 'Undo'],
+      [['Mod+Shift+Z', 'Mod+Y'], 'Redo'],
+      [['Tab'], 'Switch between Editor and Animate'],
+      [['?'], 'Show this overview'],
+      [['Esc'], 'Clear the selection · cancel picking · close this overview'],
+    ],
+  },
+  {
+    title: 'Playback & playhead',
+    rows: [
+      [['Space'], 'Play / pause'],
+      [['←', '→'], 'Playhead by 1 ms – stops at keyframes on the way'],
+      [['Shift+←', 'Shift+→'], 'Playhead by 10 ms – stops at keyframes on the way'],
+      [['Alt+←', 'Alt+→'], 'Previous / next keyframe of any element'],
+      [['Home', 'End'], 'Start / end of the timeline'],
+      [['[Drag] in the ruler'], 'Scrub – snaps to the labelled ticks'],
+      [['Mod+[Drag] in the ruler'], 'Scrub without snapping'],
+      [['[Type] in the time box'], 'Jump the playhead to that time'],
+      [['[Type] a length'], 'Make the timeline longer (room to drag keyframes later)'],
+    ],
+  },
+  {
+    title: 'Keyframes',
+    rows: [
+      [['[Click]'], 'Select – the playhead goes there'],
+      [['Shift+[Click]', 'Mod+[Click]'], 'Add to / remove from the selection'],
+      [['[Drag] on an empty track'], 'Box selection'],
+      [['Shift+[Drag] on a track'], 'Add a box selection to the current one'],
+      [['Mod+A'], 'Select all keyframes of the animation'],
+      [['[Double-click] a track'], 'New keyframe there'],
+      [['[Drag]'], 'Move – snaps to the playhead and to 10 ms; the first or last keyframe stretches the animation'],
+      [['Shift+[Drag]'], 'Move, the other keyframes keep their times'],
+      [['Mod+[Drag]'], 'Move in 1 ms steps'],
+      [['Alt+[Drag]'], 'Duplicate'],
+      [['[Type] in the time box'], 'With the playhead on the selection: move it to that time'],
+      [['Del', 'Backspace'], 'Delete'],
+      [['Mod+C', 'Mod+X'], 'Copy / cut'],
+      [['Mod+V'], 'Paste at the playhead'],
+    ],
+  },
+  {
+    title: 'Timeline',
+    rows: [
+      [['Mod+[Wheel]', '[Pinch]'], 'Zoom'],
+      [['Shift+[Wheel]'], 'Pan when zoomed'],
+      [['0'], 'Fit the timeline (and reset the preview zoom)'],
+      [['[Click] the eye'], 'Hide / show the element in the preview'],
+      [['Alt+[Click] the eye'], 'Show only this element'],
+      [['[Click] ▸'], 'Show / hide the properties of an element'],
+      [['[Drag] an edge'], 'Resize the timeline or the panel'],
+      [['[Double-click] an edge'], 'Reset its size'],
+    ],
+  },
+  {
+    title: 'Preview',
+    rows: [
+      [['V'], 'Pick an element on the page'],
+      [['Mod+[Wheel]', '[Pinch]'], 'Zoom'],
+      [['[Wheel]'], 'Pan when zoomed'],
+      [['0', '[Click] the zoom readout'], 'Reset the zoom'],
+    ],
+  },
+  {
+    title: 'Fields',
+    rows: [
+      [['↑', '↓'], 'Easing values: ±0.01'],
+      [['Shift+↑', 'Shift+↓'], 'Easing values: ±0.1'],
+      [['Enter', 'Esc'], 'Leave the field'],
+    ],
+  },
+];
+
+function keyCombo(combo) {
+  return h(
+    'span',
+    { class: 'combo' },
+    combo.split('+').flatMap((part, i) => {
+      const mouse = part.match(/^\[(.+?)\](.*)$/);
+      const node = mouse ? h('span', { class: 'mouse' }, mouse[1], mouse[2] ? h('span', { class: 'where' }, mouse[2]) : null) : h('kbd', {}, KEY_NAMES[part] || part);
+      return i ? [h('span', { class: 'plus' }, '+'), node] : [node];
+    }),
+  );
+}
+
+function shortcutsOverlay() {
+  const close = () => toggleShortcuts(false);
+  const sections = SHORTCUTS.map((cat) =>
+    h(
+      'section',
+      { class: 'keys-cat' },
+      h('h3', {}, cat.title),
+      h(
+        'dl',
+        {},
+        cat.rows.flatMap(([alts, label]) => [
+          h('dt', {}, alts.flatMap((a, i) => (i ? [h('span', { class: 'or' }, 'or'), keyCombo(a)] : [keyCombo(a)]))),
+          h('dd', {}, label),
+        ]),
+      ),
+    ),
+  );
+  return h(
+    'div',
+    { class: 'keys-backdrop', id: 'keys-overlay', onclick: (e) => e.target === e.currentTarget && close() },
+    h(
+      'div',
+      { class: 'keys-panel', role: 'dialog', 'aria-label': 'Shortcuts and mouse controls' },
+      h('header', {}, h('h2', {}, 'Shortcuts & mouse'), h('span', { class: 'spacer' }), h('button', { class: 'ghost', title: 'Close (Esc)', onclick: close }, '×')),
+      h('div', { class: 'keys-grid' }, sections),
+    ),
+  );
+}
+
+function toggleShortcuts(open = !$('#keys-overlay')) {
+  $('#keys-overlay')?.remove();
+  if (open) document.body.append(shortcutsOverlay());
+  $('#keys').classList.toggle('on', open);
+}
+
+$('#keys').onclick = () => toggleShortcuts();
+// Capture phase, so Esc closes the overview without also clearing the selection – and ? works everywhere.
+addEventListener(
+  'keydown',
+  (e) => {
+    if (e.target.matches?.('input, select, textarea')) return;
+    const open = !!$('#keys-overlay');
+    if (e.key === '?' || (open && e.key === 'Escape')) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      toggleShortcuts(e.key === '?' ? !open : false);
+    }
+  },
+  true,
+);
 
 addEventListener('keydown', (e) => {
   if (!S.model && !S.schema) return;

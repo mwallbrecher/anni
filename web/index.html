@@ -24,6 +24,9 @@
     <button class="ghost" id="redo" title="Redo (Ctrl+Shift+Z)">↷</button>
     <span class="dirty" id="dirty" hidden>● unsaved</span>
     <button class="primary" id="save" title="Write to file (Ctrl+S)">Save</button>
+    <button class="ghost" id="keys" title="Shortcuts and mouse controls (?)" aria-label="Shortcuts and mouse controls">
+      <svg viewBox="0 0 20 14" width="18" height="13" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="0.65" y="0.65" width="18.7" height="12.7" rx="1.6"/><path d="M4 4.2h1.2M7.4 4.2h1.2M10.8 4.2h1.2M14.2 4.2h1.6M4 7h1.6M8 7h1.2M11.4 7h1.2M14.4 7h1.4M6 9.8h8"/></svg>
+    </button>
   </header>
 
   <div class="banner" id="banner" hidden></div>
@@ -67,7 +70,6 @@
       </select>
       <div class="spacer"></div>
       <button id="tl-zoom" class="readout" title="Timeline zoom: pinch or ⌘/Ctrl + wheel, Shift + wheel pans · click or press 0 to fit" hidden>1.0× · fit</button>
-      <span class="muted hint">Scrub in the ruler · drag on a track = select keyframes · drag a keyframe = move (snaps to the playhead; first/last stretch the animation, Shift keeps the others' times) · double-click = new keyframe · ←/→ = 1 ms (Shift: 10 ms) · Alt+←/→ = next keyframe · pinch = zoom</span>
       <button id="add-kf">+ Keyframe at playhead</button>
     </div>
     <div class="tracks" id="tracks"></div>
