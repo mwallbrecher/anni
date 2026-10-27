@@ -234,6 +234,8 @@ function stopHome() {
   cancelAnimationFrame(home.drift);
   home.raf = home.drift = 0;
   stopBoot();
+  home.spy?.disconnect();
+  document.querySelector('#home-nav')?.remove();
 }
 
 /** Nothing to edit here: the example loop in an editor window, a prompt that opens it for real, the install line. */
@@ -257,38 +259,82 @@ function renderHome(mcpUrl, { tokenRequired = false } = {}) {
     ),
   );
   card.replaceChildren(head, demo, homeInstall(installCommands(mcpUrl), tokenRequired), ...homeHow());
-  for (const sec of card.querySelectorAll('.home-sec:not(.setup)')) collapsible(sec);
+  for (const sec of card.querySelectorAll('.home-sec')) collapsible(sec);
+  homeNav(card);
   bootHome(head, typed, demo);
 }
 
-/** A section folds under its heading: a click on it (or Enter / Space) toggles the rest, remembered per section. */
+/**
+ * The top bar's links: Setup (the first screen: intro, demo and setup line) and the sections. A click scrolls
+ * there, opening a folded section; the part in view is marked.
+ */
+function homeNav(card) {
+  const root = $('#empty');
+  const secs = [...card.querySelectorAll('.home-sec')];
+  const label = (s) => s.querySelector('h2').textContent.replace('▾', '').trim();
+  const parts = [
+    { name: 'Setup', els: [...card.children].filter((el) => !el.classList.contains('home-sec')), go: () => root.scrollTo({ top: 0, behavior: 'smooth' }) },
+    ...secs.map((s) => {
+      s.id = `s-${label(s).toLowerCase().replace(/[^a-z]+/g, '-')}`;
+      return { name: label(s), els: [s], go: () => s.open() };
+    }),
+  ];
+  const links = parts.map((p) => h('a', { href: p.els[0].id ? `#${p.els[0].id}` : '#', onclick: (e) => (e.preventDefault(), p.go()) }, p.name));
+  $('.topbar .brand').after(h('nav', { id: 'home-nav', class: 'home-nav', 'aria-label': 'Sections' }, links));
+  // The part crossing a band near the top of the page is the current one.
+  const inView = new Set();
+  home.spy = new IntersectionObserver(
+    (entries) => {
+      for (const e of entries) e.isIntersecting ? inView.add(e.target) : inView.delete(e.target);
+      const current = parts.find((p) => p.els.some((el) => inView.has(el)));
+      links.forEach((a, i) => a.classList.toggle('on', parts[i] === current));
+    },
+    { root, rootMargin: '-30% 0px -65% 0px' },
+  );
+  for (const p of parts) for (const el of p.els) home.spy.observe(el);
+}
+
+/** A section starts folded under its heading; a click on it (or Enter / Space) toggles it, and opening brings it into view. */
 function collapsible(sec) {
   const h2 = sec.querySelector('h2');
   const inner = h('div', { class: 'sec-inner' });
   while (h2.nextSibling) inner.append(h2.nextSibling);
   sec.append(h('div', { class: 'sec-body' }, inner));
-  const key = h2.textContent;
-  let folded = [];
-  try {
-    folded = JSON.parse(localStorage.getItem('anni.folded') || '[]');
-  } catch {}
   const set = (closed) => {
     sec.classList.toggle('collapsed', closed);
     h2.setAttribute('aria-expanded', String(!closed));
     inner.inert = closed;
   };
-  const toggle = () => {
-    const closed = !sec.classList.contains('collapsed');
-    set(closed);
-    folded = folded.filter((k) => k !== key).concat(closed ? [key] : []);
-    try {
-      localStorage.setItem('anni.folded', JSON.stringify(folded));
-    } catch {}
+  // Its unfolded height, measured before the unfolding animation runs: open for an instant without transitions.
+  const unfolded = () => {
+    if (!sec.classList.contains('collapsed')) return sec.offsetHeight;
+    sec.classList.add('measuring');
+    set(false);
+    const full = sec.offsetHeight;
+    set(true);
+    void sec.offsetHeight;
+    sec.classList.remove('measuring');
+    return full;
   };
+  // Opening centres the section vertically (or puts its top in view when it is taller than the page).
+  sec.open = () => {
+    const root = $('#empty');
+    const full = unfolded();
+    set(false);
+    sec.style.minHeight = `${full}px`; // the page is that long at once, so the scroll can reach its target
+    setTimeout(() => (sec.style.minHeight = ''), 500);
+    const top = root.scrollTop + sec.getBoundingClientRect().top - root.getBoundingClientRect().top;
+    // The last sections need room below them to reach the middle: the page grows a spacer for that.
+    const card = sec.parentElement;
+    const short = (root.clientHeight - full) / 2 - (root.scrollHeight - top - full);
+    if (short > 0) card.style.paddingBottom = `${(parseFloat(card.style.paddingBottom) || 0) + short}px`;
+    root.scrollTo({ top: Math.max(0, full < root.clientHeight ? top + full / 2 - root.clientHeight / 2 : top), behavior: 'smooth' });
+  };
+  const toggle = () => (sec.classList.contains('collapsed') ? sec.open() : set(true));
   h2.prepend(h('span', { class: 'sec-chevron', 'aria-hidden': 'true' }, '▾'));
   Object.assign(h2, { tabIndex: 0, onclick: toggle, onkeydown: (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), toggle()) });
   h2.setAttribute('role', 'button');
-  set(folded.includes(key));
+  set(true);
 }
 
 /**
@@ -302,6 +348,7 @@ function bootHome(head, typed, demo) {
     typed.textContent = PROMPT;
     demo.classList.add('open');
     head.classList.add('ready');
+    document.querySelector('#home-nav')?.classList.add('on');
   };
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) return finish();
   for (const el of [head, demo]) el.addEventListener('pointerdown', finish, { once: true });
@@ -850,7 +897,7 @@ function homeInstall(agents, tokenRequired) {
     ),
   );
   set(agent, mode);
-  return h('section', { class: 'setup home-sec late' }, h('div', { class: 'setup-head' }, h('h2', {}, 'Setup'), agentSeg), h('div', { class: 'install' }, modeSeg, line), hint);
+  return h('div', { class: 'setup late' }, h('div', { class: 'setup-head' }, h('h2', {}, 'Setup'), agentSeg), h('div', { class: 'install' }, modeSeg, line), hint);
 }
 
 /* ---------- access: lock screen, roles, requests, watching (hosted only) ---------- */

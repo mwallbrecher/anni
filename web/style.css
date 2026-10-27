@@ -167,6 +167,13 @@ code { font-family: var(--mono); background: var(--panel-2); padding: 1px 5px; b
   background: #161616;
 }
 .brand { display: flex; align-items: center; gap: 8px; margin-right: 8px; }
+/* the homepage's sections in the top bar (homeNav), shown once the intro is done */
+.home-nav { display: flex; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; opacity: 0; transition: opacity 500ms 650ms; }
+.home-nav.on { opacity: 1; }
+.home-nav::-webkit-scrollbar { display: none; }
+.home-nav a { flex: none; padding: 4px 8px; font-family: var(--display); font-size: 11px; color: var(--muted); text-decoration: none; white-space: nowrap; transition: color 150ms; }
+.home-nav a:hover, .home-nav a:focus-visible { color: var(--text); outline: none; }
+.home-nav a.on { color: var(--accent); }
 .file { color: var(--muted); font-family: var(--mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40vw; direction: rtl; }
 .dirty { color: var(--warn); font-size: 11px; white-space: nowrap; }
 .dirty.saving { color: var(--muted); animation: saving-pulse 0.8s ease-in-out infinite alternate; }
@@ -555,7 +562,7 @@ button.primary { color: var(--offwhite); }
 .prompt .chrome-btn { margin-left: 8px; white-space: nowrap; opacity: 1; border-color: var(--accent); }
 .prompt .chrome-btn:disabled { opacity: 0.5; transform: none; box-shadow: none; }
 
-.setup.home-sec { border-top: 0; padding-top: 0; } /* Setup stays open and needs no divider */
+.setup { margin-top: 32px; } /* part of the first screen, not a section of its own */
 .setup-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-bottom: 14px; }
 .setup .setup-head h2 { margin: 0; }
 .setup-head .seg button { height: 26px; padding: 0 12px; font-family: var(--display); font-size: 11px; }
@@ -573,9 +580,9 @@ button.primary { color: var(--offwhite); }
 .home .install-hint { margin: 8px 0 0; font-size: 11px; line-height: 1.5; }
 /* How it works */
 .home-sec { margin-top: 48px; padding-top: 32px; border-top: 1px solid var(--line); } /* the divider before every heading */
-.home-sec.late { opacity: 0; transform: translateY(16px); transition: opacity 600ms, transform 700ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+.late { opacity: 0; transform: translateY(16px); transition: opacity 600ms, transform 700ms cubic-bezier(0.2, 0.8, 0.2, 1); }
 .home-head.ready ~ .late { opacity: 1; transform: none; transition-delay: 650ms; } /* after the title and the open row */
-.home-sec h2 { margin: 0; font-family: var(--display); font-size: 18px; font-weight: 400; color: var(--bright); }
+:is(.home-sec, .setup) h2 { margin: 0; font-family: var(--display); font-size: 18px; font-weight: 400; color: var(--bright); }
 /* collapsible sections (collapsible() in app.js): the heading toggles, the body folds via a 0fr / 1fr row */
 .home-sec h2[role="button"] { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; outline: none; }
 .home-sec h2[role="button"]:hover, .home-sec h2[role="button"]:focus-visible { color: var(--accent); }
@@ -584,6 +591,7 @@ button.primary { color: var(--offwhite); }
 .collapsed .sec-chevron { transform: rotate(-90deg); }
 .sec-body { display: grid; grid-template-rows: 1fr; transition: grid-template-rows 450ms cubic-bezier(0.2, 0.8, 0.2, 1); }
 .collapsed .sec-body { grid-template-rows: 0fr; }
+.measuring, .measuring * { transition: none !important; } /* collapsible() measuring the unfolded height */
 .sec-inner { min-height: 0; overflow: hidden; padding-top: 18px; transition: opacity 300ms, padding-top 450ms cubic-bezier(0.2, 0.8, 0.2, 1); }
 .collapsed .sec-inner { opacity: 0; padding-top: 0; }
 .home-sec h3 { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--bright); }
