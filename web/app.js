@@ -897,7 +897,7 @@ function homeInstall(agents, tokenRequired) {
     ),
   );
   set(agent, mode);
-  return h('div', { class: 'setup late' }, h('div', { class: 'setup-head' }, h('h2', {}, 'Setup'), agentSeg), h('div', { class: 'install' }, modeSeg, line), hint);
+  return h('div', { class: 'setup late' }, h('div', { class: 'setup-head' }, h('h2', {}, 'Setup'), agentSeg), h('div', { class: 'install' }, modeSeg, line), hint, h('p', { class: 'muted install-hint' }, 'Use in terminal or simply tell your agent.'));
 }
 
 /* ---------- access: lock screen, roles, requests, watching (hosted only) ---------- */
