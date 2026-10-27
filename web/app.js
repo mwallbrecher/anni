@@ -1689,9 +1689,9 @@ function field(label, input, cls = '') {
 
 function numberInput(value, unit, onValue) {
   const input = h('input', {
-    type: 'number',
+    ...NUM_FIELD,
+    'data-step': 10,
     value,
-    step: 10,
     oninput: (e) => {
       const v = parseFloat(e.target.value);
       if (!Number.isNaN(v)) onValue(v);
@@ -1746,10 +1746,10 @@ function curveEditor(easing, onEasing) {
   const field = (i) => {
     const isX = i % 2 === 0;
     const input = h('input', {
+      ...NUM_FIELD, // formulas, and ↑/↓ by 0.01 (Shift: 0.1)
+      'data-step': 0.01,
       class: `bz ${i < 2 ? 'p1' : 'p2'}`,
       value: num(pts[i]),
-      inputmode: 'decimal',
-      spellcheck: 'false',
       title: `${isX ? 'x' : 'y'}${i < 2 ? 1 : 2}${isX ? ' (0–1)' : ''}`,
       oninput: (e) => {
         const v = parseFloat(e.target.value.replace(',', '.'));
@@ -1759,15 +1759,7 @@ function curveEditor(easing, onEasing) {
         commit();
       },
       onkeydown: (e) => {
-        if (e.key === 'Enter' || e.key === 'Escape') return e.target.blur();
-        if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
-        e.preventDefault();
-        const step = (e.shiftKey ? 0.1 : 0.01) * (e.key === 'ArrowUp' ? 1 : -1);
-        pts[i] = Math.round((pts[i] + step) * 1000) / 1000;
-        if (isX) pts[i] = clamp(pts[i], 0, 1);
-        e.target.value = num(pts[i]);
-        fit(e.target);
-        commit();
+        if (e.key === 'Enter' || e.key === 'Escape') e.target.blur();
       },
       onblur: (e) => {
         e.target.value = num(pts[i]); // show what was applied (clamped, normalised)
@@ -2000,11 +1992,9 @@ function renderKeyframeSection(a) {
   const others = block.offsets.filter((_, i) => i !== oi);
 
   const offsetInput = h('input', {
-    type: 'number',
+    ...NUM_FIELD,
+    'data-step': 1,
     value: block.offsets[oi],
-    min: 0,
-    max: 100,
-    step: 1,
     oninput: (e) => {
       const v = parseFloat(e.target.value);
       if (Number.isNaN(v)) return;
@@ -2068,8 +2058,8 @@ function buildEditor(prop, value, set) {
 function numField(tok, units, range, withSlider, onChange) {
   const [min, max, step] = rangeFor(tok, range);
   const num = h('input', {
-    type: 'number',
-    step,
+    ...NUM_FIELD,
+    'data-step': step,
     value: tok.n,
     oninput: (e) => {
       const v = parseFloat(e.target.value);
@@ -2929,6 +2919,99 @@ $('#mode').onclick = (e) => e.target.dataset.mode && setMode(e.target.dataset.mo
 $('#pick').onclick = () => setPicking(!S.picking);
 $('#anim-select').onchange = (e) => setAnimation(e.target.value);
 
+/* ---------- number fields: formulas and arrow steps ---------- */
+
+/*
+ * Every number field (data-expr) takes a formula: "2000-50", "120*1.5", "(300+60)/2", comma or point.
+ * A leading operator works on the value the field had: "+50", "*2", "/2", "- 50" (with a space; "-50" stays a
+ * negative number). It is worked out on Enter or when the field is left; the field's own input handler then
+ * gets the result like a typed number. ↑/↓ step by data-step (Shift: ×10).
+ */
+const NUM_FIELD = { type: 'text', inputmode: 'decimal', spellcheck: 'false', autocomplete: 'off', 'data-expr': '' };
+
+/** Arithmetic only (+ − × ÷, parentheses, unary minus) – a tiny parser, nothing is eval'd. Null if it isn't one. */
+function evalExpr(text, prev) {
+  let s = String(text).trim().replace(/,/g, '.').replace(/×/g, '*').replace(/÷/g, '/').replace(/−/g, '-');
+  if (!s) return null;
+  if (/^[+*/]/.test(s) || /^-\s/.test(s)) {
+    if (!Number.isFinite(prev)) return null;
+    s = `${prev}${s}`;
+  }
+  let i = 0;
+  const ws = () => {
+    while (s[i] === ' ') i++;
+  };
+  const num = () => {
+    ws();
+    if (s[i] === '(') {
+      i++;
+      const v = sum();
+      ws();
+      if (s[i++] !== ')') throw 0;
+      return v;
+    }
+    if (s[i] === '-' || s[i] === '+') return (s[i++] === '-' ? -1 : 1) * num();
+    const m = s.slice(i).match(/^\d*\.?\d+(e[+-]?\d+)?/i);
+    if (!m) throw 0;
+    i += m[0].length;
+    return parseFloat(m[0]);
+  };
+  const product = () => {
+    let v = num();
+    for (ws(); s[i] === '*' || s[i] === '/'; ws()) v = s[i++] === '*' ? v * num() : v / num();
+    return v;
+  };
+  const sum = () => {
+    let v = product();
+    for (ws(); s[i] === '+' || s[i] === '-'; ws()) v = s[i++] === '+' ? v + product() : v - product();
+    return v;
+  };
+  try {
+    const v = sum();
+    ws();
+    return i === s.length && Number.isFinite(v) ? +v.toFixed(6) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Puts `v` into the field and lets its own input handler apply it. */
+function setField(input, v) {
+  input.value = String(v);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function commitExpr(input) {
+  const v = evalExpr(input.value, parseFloat(input.dataset.prev));
+  if (v === null) input.value = input.dataset.prev ?? input.value; // not a number or formula: back to what it was
+  else if (String(v) !== input.value) setField(input, v);
+}
+
+const isNumField = (el) => el instanceof HTMLInputElement && el.hasAttribute('data-expr');
+// The value before editing, for leading operators and to restore an invalid entry. Noted on focus – or on the
+// first key, should focus not have been reported – and dropped when the field is left.
+const notePrev = (input) => input.dataset.prev ?? (input.dataset.prev = input.value.replace(',', '.'));
+document.addEventListener('focusin', (e) => isNumField(e.target) && (e.target.dataset.prev = e.target.value.replace(',', '.')));
+document.addEventListener('focusout', (e) => isNumField(e.target) && delete e.target.dataset.prev);
+// Capture phase: the result is in the field before the field's own Enter / change handlers read it.
+document.addEventListener('change', (e) => isNumField(e.target) && commitExpr(e.target), true);
+document.addEventListener(
+  'keydown',
+  (e) => {
+    const input = e.target;
+    if (!isNumField(input)) return;
+    notePrev(input);
+    if (e.key === 'Enter') return commitExpr(input);
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    e.preventDefault();
+    const step = (parseFloat(input.dataset.step) || 1) * (e.shiftKey ? 10 : 1);
+    const base = evalExpr(input.value, parseFloat(input.dataset.prev)) ?? 0;
+    const decimals = (String(input.dataset.step || 1).split('.')[1] || '').length;
+    setField(input, +(base + (e.key === 'ArrowUp' ? step : -step)).toFixed(decimals));
+  },
+  true,
+);
+
 /* ---------- shortcuts overview (keyboard button top right, or ?) ---------- */
 
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
@@ -3008,8 +3091,10 @@ const SHORTCUTS = [
   {
     title: 'Fields',
     rows: [
-      [['↑', '↓'], 'Easing values: ±0.01'],
-      [['Shift+↑', 'Shift+↓'], 'Easing values: ±0.1'],
+      [['[Type] 2000-50'], 'Formulas in every number field: + − × ÷ and ( ), worked out on Enter or when leaving the field'],
+      [['[Type] +50', '[Type] *2'], 'A leading operator uses the field’s value: +50, - 50, *2, /2'],
+      [['↑', '↓'], 'One step (ms, %, easing 0.01 …)'],
+      [['Shift+↑', 'Shift+↓'], 'Ten steps'],
       [['Enter', 'Esc'], 'Leave the field'],
     ],
   },

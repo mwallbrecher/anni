@@ -55,9 +55,9 @@
       <button class="icon" id="play" title="Play / pause (Space)">▶</button>
       <button class="icon" id="rewind" title="Back to start">⏮</button>
       <div class="time" id="time">
-        <input id="t-now" type="number" min="0" step="10" title="Playhead time – type to jump; with the playhead on selected keyframes, they move along" aria-label="Playhead time in ms">
+        <input id="t-now" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" data-expr data-step="10" title="Playhead time – type to jump; with the playhead on selected keyframes, they move along" aria-label="Playhead time in ms">
         <span>/</span>
-        <input id="t-dur" type="number" min="1" step="10" aria-label="Timeline length in ms">
+        <input id="t-dur" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" data-expr data-step="10" aria-label="Timeline length in ms">
         <span>ms</span>
       </div>
       <label class="check"><input type="checkbox" id="loop" checked> Loop</label>
@@ -82,6 +82,12 @@
       <p>Tell your agent something like <code>open the bounce animation from styles.css in anni</code>.</p>
       <p class="muted">Or from a terminal: <code>node src/cli.js path/to/file.css</code></p>
     </div>
+    <footer class="site-footer">
+      Built with
+      <svg class="heart" viewBox="0 0 7 6" width="11" height="10" role="img" aria-label="love" shape-rendering="crispEdges"><path fill="currentColor" d="M1 0h2v1h1V0h2v1h1v2H6v1H5v1H4v1H3V5H2V4H1V3H0V1h1z"/></svg>
+      by <a href="https://moritzwallbrecher.com" target="_blank" rel="noopener">Moritz Wallbrecher</a>
+      <a href="https://syntwin.ai" target="_blank" rel="noopener">@syntwin</a>
+    </footer>
   </div>
 
   <div class="toast" id="toast"></div>
