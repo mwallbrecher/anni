@@ -4,6 +4,7 @@
 // or /s/<id>/ (path mode, e.g. on workers.dev where there is no wildcard).
 import { createMcpHandler } from 'agents/mcp/server';
 import { call, createServer, isSessionId, openSession, sessionStub } from './mcp.js';
+import { editorAsset, isEditorAsset, versionOf } from './assets.js';
 
 export { AnniSession } from './session.js';
 
@@ -69,9 +70,11 @@ export default {
       }
     }
     if (url.pathname === '/api/ping') return json({ app: 'anni', hosted: true });
+    if (url.pathname === '/api/version') return json({ version: versionOf(env) });
     if (url.pathname === '/api/session') return json({ session: null, hosted: true, mcpUrl: `${url.origin}/mcp`, ttlDays: 7, tokenRequired: !!env.ANNI_TOKEN });
     if (url.pathname === '/api/events') return new Response('retry: 3600000\n\n', { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' } }); // nothing to push at the root
     if (url.pathname.startsWith('/api/')) return json({ error: 'No session in this URL' }, 404);
+    if (isEditorAsset(url.pathname)) return editorAsset(env, request, url.pathname);
     return env.ASSETS.fetch(request);
   },
 };

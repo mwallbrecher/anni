@@ -291,6 +291,7 @@ async function saveSchema() {
     renderSchemaHeader();
     renderSchemaPanel();
     toast(r.changed ? `Saved ${r.changes.length} change${r.changes.length === 1 ? '' : 's'} – your agent can pull them now` : 'No changes');
+    reloadIfUpdated();
   } catch (e) {
     toast(`Error: ${e.message}`);
   }
@@ -1353,6 +1354,7 @@ async function saveNow() {
       }
       renderAll();
       resolveLiveTiming(); // the fresh model from the server knows nothing about inherited timing
+      reloadIfUpdated();
       return;
     }
     S.sel = null;
@@ -1369,6 +1371,7 @@ async function saveNow() {
     await pushNow();
     resolveLiveTiming(); // the fresh model from the server knows nothing about inherited timing
     toast(r.changed ? (S.session.hosted ? 'Saved – your agent can pull it now' : 'Saved to file') : 'No changes');
+    reloadIfUpdated();
   } catch (e) {
     toast(`Error: ${e.message}`);
   }
@@ -2749,11 +2752,41 @@ addEventListener('beforeunload', (e) => {
 
 $('#prop-list').replaceChildren(...KNOWN.map((p) => h('option', { value: p })));
 
+/*
+ * New deploys reach open tabs: the hosted server stamps the page with its version (<meta name="anni-version">)
+ * and reports the current one on every event-stream connect (a deploy drops the stream, the tab reconnects)
+ * and on /api/version, checked whenever the tab comes back into view. A tab without unsaved edits reloads
+ * right away; one with edits says so and reloads after the next save. Local mode has no version: nothing happens.
+ */
+const BUILD = document.querySelector('meta[name="anni-version"]')?.content;
+
+function checkVersion(version) {
+  if (!BUILD || !version || version === BUILD || S.updatePending) return;
+  if (!S.dirty) return location.reload();
+  S.updatePending = true;
+  banner([h('span', {}, 'anni was updated. Save to switch to the new editor – it reloads right after.'), h('button', { class: 'primary', onclick: saveNow }, 'Save')]);
+}
+
+function reloadIfUpdated() {
+  if (S.updatePending && !S.dirty) setTimeout(() => location.reload(), 800); // let the save toast show first
+}
+
+if (BUILD) {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    fetch(`${BASE}/api/version`, { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((d) => checkVersion(d.version))
+      .catch(() => {});
+  });
+}
+
 let events;
 /** Server events (agent opened something, file changed on disk). The hosted root page has no session to follow. */
 function listen() {
   if (events) return;
   events = new EventSource(`${BASE}/api/events`);
+  events.addEventListener('version', (e) => checkVersion(JSON.parse(e.data).version));
   events.addEventListener('session', () => load());
   events.addEventListener('external-change', () => {
     if (!S.dirty) return load({ keepTime: true }).then(() => toast('File changed on disk – reloaded'));

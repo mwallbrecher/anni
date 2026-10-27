@@ -10,6 +10,8 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AnniSession"] }],
   "assets": { "directory": "./web", "binding": "ASSETS", "run_worker_first": true },
   "observability": { "enabled": true },
+  // The deploy's version id versions the editor's asset URLs, so every deploy reaches open tabs (worker/assets.js).
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
   // ANNI_HOST: the host the root site runs on (e.g. "anni.example.com"). ANNI_URL_MODE "subdomain"
   // gives every session its own origin <id>.<ANNI_HOST> (needs the wildcard route below and a
   // wildcard DNS record); "path" serves sessions as /s/<id>/ on one origin (workers.dev, local dev).
@@ -21,7 +23,8 @@
         { "pattern": "anni.run", "custom_domain": true },
         { "pattern": "*.anni.run/*", "zone_name": "anni.run" }
       ],
-      "durable_objects": { "bindings": [{ "name": "ANNI_SESSION", "class_name": "AnniSession" }] }
+      "durable_objects": { "bindings": [{ "name": "ANNI_SESSION", "class_name": "AnniSession" }] },
+      "version_metadata": { "binding": "CF_VERSION_METADATA" }
     }
   }
 }

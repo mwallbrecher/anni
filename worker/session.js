@@ -1,6 +1,7 @@
 // One editing session: the files an agent handed over, which of them is edited, the live model
 // with unsaved edits, SSE streams to open editor tabs, and agents waiting for the next save.
 import { applyModel, describe, kindOf, modelFromText, renderText } from '../src/css.js';
+import { editorAsset, isEditorAsset, versionOf } from './assets.js';
 
 const STYLE_OPEN_RE = /(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi;
 const MIME = {
@@ -31,8 +32,6 @@ const MAX_TOTAL = 24 * 1024 * 1024;
 const MAX_FILES = 300;
 const MAX_CONTROLS = 400;
 const TTL_MS = 7 * 24 * 60 * 60 * 1000; // a session is wiped after a week without activity
-const EDITOR_ASSETS = new Set(['/', '/index.html', '/app.js', '/props.js', '/aurora.js', '/style.css']);
-const isEditorAsset = (p) => EDITOR_ASSETS.has(p) || p.startsWith('/brand/') || p.startsWith('/fonts/');
 
 const NOINDEX = { 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow' };
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...NOINDEX } });
@@ -351,6 +350,7 @@ body { display: grid !important; place-items: center !important; background: tra
       }
 
       if (route === 'GET /api/ping') return json({ app: 'anni', hosted: true });
+      if (route === 'GET /api/version') return json({ version: versionOf(this.env) });
       if (route === 'GET /api/session') return json(this.payload(base));
       if (route === 'GET /api/events') return this.events();
       if (!this.meta && url.pathname.startsWith('/api/')) return json({ error: 'No animation open in this session' }, 409);
@@ -414,12 +414,7 @@ body { display: grid !important; place-items: center !important; background: tra
         }
         return text(body, MIME[ext(p)] || 'application/octet-stream');
       }
-      if (isEditorAsset(url.pathname)) {
-        const res = await this.env.ASSETS.fetch(new Request(new URL(url.pathname === '/' ? '/index.html' : url.pathname, 'https://assets.invalid'), { headers: request.headers }));
-        const headers = new Headers(res.headers);
-        headers.set('X-Robots-Tag', 'noindex, nofollow');
-        return new Response(res.body, { status: res.status, headers });
-      }
+      if (isEditorAsset(url.pathname)) return editorAsset(this.env, request, url.pathname);
       return text('Not found', 'text/plain', 404);
     } catch (e) {
       return json({ error: e.message }, 400);
@@ -432,7 +427,8 @@ body { display: grid !important; place-items: center !important; background: tra
     const stream = new ReadableStream({
       start: (c) => {
         controller = c;
-        c.enqueue(new TextEncoder().encode(': hi\n\n'));
+        // A deploy restarts this object and drops the stream; the tab reconnects and learns the new version here.
+        c.enqueue(new TextEncoder().encode(`event: version\ndata: ${JSON.stringify({ version: versionOf(this.env) })}\n\n`));
         this.streams.add(c);
         ping = setInterval(() => {
           try {
