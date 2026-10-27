@@ -2144,7 +2144,18 @@ function laneX(e, rect, fine) {
   return fine ? Math.round(p * 10) / 10 : Math.round(p);
 }
 
-function followPointer(onMove) {
+/**
+ * Tracks one drag gesture from its pointerdown `e`. Like a canvas app it owns the pointer: no native
+ * text selection or focus change, and the pointer is captured by #tracks (which survives re-renders)
+ * so the drag keeps going when it passes over the preview iframe.
+ */
+function followPointer(e, onMove) {
+  e.preventDefault();
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  getSelection()?.removeAllRanges();
+  try {
+    $('#tracks').setPointerCapture(e.pointerId);
+  } catch {}
   const move = (ev) => (ev.buttons === 0 ? end() : onMove(ev));
   const end = () => {
     removeEventListener('pointermove', move);
@@ -2166,7 +2177,7 @@ function startScrub(e, lane) {
   move(e);
   S.playing = false;
   updatePlayButton();
-  followPointer(move);
+  followPointer(e, move);
 }
 
 function startDrag(e, g, bi, oi) {
@@ -2179,7 +2190,7 @@ function startDrag(e, g, bi, oi) {
   const x0 = e.clientX;
   const duplicate = e.altKey; // ⌥-drag leaves a copy behind, like in a design tool
   let moved = false;
-  followPointer((ev) => {
+  followPointer(e, (ev) => {
     if (!moved && Math.abs(ev.clientX - x0) < 3) return;
     if (!moved) {
       moved = true;

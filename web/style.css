@@ -51,7 +51,11 @@ body {
   font: 12px/1.4 Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
+  /* An app, not a document: dragging in the UI must never select text (as in Figma). Fields stay selectable. */
+  -webkit-user-select: none;
+  user-select: none;
 }
+input, textarea, [contenteditable="true"], code { -webkit-user-select: text; user-select: text; }
 
 button, input, select {
   font: inherit;
