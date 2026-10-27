@@ -2228,6 +2228,8 @@ function onTimelineWheel(e) {
   }
 }
 $('#tracks').addEventListener('wheel', onTimelineWheel, { passive: false });
+// The empty area below the last row is part of the canvas too: a drag there starts a selection box.
+$('#tracks').addEventListener('pointerdown', (e) => e.target === e.currentTarget && startMarquee(e));
 $('#tl-zoom').onclick = resetTimelineView;
 
 /** Re-renders the timeline when the set of animated elements on the page changed (e.g. started by script). */
