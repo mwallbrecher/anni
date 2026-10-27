@@ -2,7 +2,7 @@
 // iframe (same origin), and drives the selected CSS animation with a paused Web Animation.
 
 import { FNS, KNOWN, LENGTH, defaultOf, fmtColor, fmtFns, fmtNum, fmtTokens, parseFns, parseNum, parseTokens, rangeFor, specOf, splitTop, toHex, toRgba } from './props.js';
-import { EXAMPLE_CSS, EXAMPLE_SESSION, KEYFRAME_META, exampleCssWith, exampleDoc } from './example.js';
+import { EXAMPLE_CSS, EXAMPLE_ID, EXAMPLE_SESSION, KEYFRAME_META, exampleCssWith, exampleDoc } from './example.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -839,7 +839,7 @@ function homeHow() {
         fact('One Durable Object per session', 'anni runs on a Cloudflare Worker. Every session is its own Durable Object with its own SQLite-backed storage: the uploaded files, the live state of the editor, the open tabs and the agent waiting for a save. Nothing is shared between sessions, and there are no accounts.'),
         fact('Its own origin', 'Each session is served from its own subdomain, ', c('<id>.anni.run'), ', with an unguessable id – an uploaded page can’t script another session. Session pages are never cached or indexed.'),
         fact('Yours, by token', 'The agent’s link carries an owner token in the ', c('#fragment'), ', which browsers never send to a server; the session stores only its SHA-256. Others with the link ask for access, unless you make the session public or lock it. Only you edit.'),
-        fact('Gone after 7 days', 'Every open and save pushes an alarm out; 7 days after the last activity the session deletes everything it stored. Closing a session deletes it right away. Uploads are capped at 1.5 MB per file and 24 MB per session.'),
+        fact('Gone after 7 days', 'Every open and save pushes an alarm out; 7 days after the last activity the session deletes everything it stored – except the shared example, ', c(`${EXAMPLE_ID}.anni.run`), ', which stays. Closing a session deletes it right away. Uploads are capped at 1.5 MB per file and 24 MB per session.'),
         fact('Or not on Cloudflare at all', 'Local mode runs the same editor on ', c('127.0.0.1'), ' – nothing leaves your machine. Or deploy your own instance with ', c('wrangler deploy'), ' and require a token with ', c('ANNI_TOKEN'), '.'),
       ),
     ),

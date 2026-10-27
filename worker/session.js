@@ -3,6 +3,7 @@
 import { applyModel, describe, kindOf, mergeModel, modelFromText, renderText } from '../src/css.js';
 import { editorAsset, isEditorAsset, versionOf } from './assets.js';
 import { changeMarkdown, changeSummary, cssChanges, lineDiff } from '../src/changes.js';
+import { EXAMPLE_SESSION } from '../web/example.js';
 
 const STYLE_OPEN_RE = /(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi;
 const MIME = {
@@ -193,12 +194,27 @@ export class AnniSession {
   /** The session a copy came from receives its export. One proposal per copy: a newer export replaces the older. */
   async receiveProposal(p) {
     if (!this.meta) throw new Error('The original session no longer exists');
+    if (this.meta.example) return; // copies of the example have nobody to send changes to
     const id = p.from;
     const entry = { id, from: p.from, url: p.url || null, author: cleanName(p.author) || 'Someone', at: p.at, summary: String(p.summary || '').slice(0, 300), baseRev: p.baseRev, read: false };
     this.meta.proposals = [entry, ...(this.meta.proposals || []).filter((x) => x.id !== id)].slice(0, 30);
     await this.ctx.storage.put(`proposal:${id}`, String(p.markdown));
     await this.persist();
     this.broadcast('access', {}, (s) => s.role === 'owner');
+  }
+
+  /**
+   * The shared example (EXAMPLE_ID; the Worker says so with x-anni-example) is set up on its first request and
+   * again whenever a deploy changed the example's files. It is public and owned by a token nobody holds, so
+   * everyone watches, nobody edits or claims it, and visitors edit a copy. It never expires.
+   */
+  async seedExample() {
+    const current = EXAMPLE_SESSION.files.every((f) => this.files[f.path] === f.content) && Object.keys(this.files).length === EXAMPLE_SESSION.files.length;
+    if (this.meta?.example && current) return;
+    this.closedAt = null;
+    await this.ctx.storage.delete('closed');
+    const owner = { tokenHash: await hashToken(newToken()), name: 'anni', api: true, at: Date.now() };
+    await this.openFiles(EXAMPLE_SESSION, { access: 'public', owner, example: true });
   }
 
   /** owner / access / guests survive the agent re-opening the session with new files. */
@@ -217,9 +233,10 @@ export class AnniSession {
     return { files, file: this.meta.file, preview: this.meta.preview, animation: this.meta.animation, rev: this.meta.rev, owner: this.meta.owner?.name || null };
   }
 
-  /** Expiry: every open/save pushes the alarm out; when it fires the session is deleted entirely. */
+  /** Expiry: every open/save pushes the alarm out; when it fires the session is deleted entirely. The example stays. */
   async touch() {
-    await this.ctx.storage.setAlarm(Date.now() + TTL_MS);
+    if (this.meta?.example) await this.ctx.storage.deleteAlarm();
+    else await this.ctx.storage.setAlarm(Date.now() + TTL_MS);
   }
 
   async alarm() {
@@ -577,6 +594,7 @@ body { display: grid !important; place-items: center !important; background: tra
     const want = request.headers.get('x-anni-version');
     if (want && this.env.CF_VERSION_METADATA?.id && want !== versionOf(this.env)) this.ctx.abort('anni was deployed');
     await this.ready;
+    if (request.headers.get('x-anni-example')) await this.seedExample();
     const url = new URL(request.url);
     const base = request.headers.get('x-anni-base') || '';
     const route = `${request.method} ${url.pathname}`;

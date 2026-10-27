@@ -6,6 +6,7 @@ import { createMcpHandler } from 'agents/mcp/server';
 import { call, createServer, isSessionId, openSession, sessionStub } from './mcp.js';
 import { editorAsset, isEditorAsset, versionOf } from './assets.js';
 import { llmsTxt, robotsTxt, sitemapXml } from './seo.js';
+import { EXAMPLE_ID } from '../web/example.js';
 
 export { AnniSession } from './session.js';
 
@@ -54,6 +55,8 @@ export default {
       const headers = new Headers(request.headers);
       headers.set('x-anni-base', loc.base);
       headers.set('x-anni-version', versionOf(env));
+      headers.delete('x-anni-example'); // only this Worker marks the example, never a client
+      if (loc.id === EXAMPLE_ID) headers.set('x-anni-example', '1');
       // "Edit a copy": whoever may watch this session gets a new one with the same files, as its owner.
       if (inner.pathname === '/api/fork' && request.method === 'POST') {
         try {
@@ -63,7 +66,9 @@ export default {
           const { name } = await request.json().catch(() => ({}));
           // The copy remembers where it came from and the state it started from, to export changes against.
           const base = data.schema ? { values: Object.fromEntries(data.schema.groups.flatMap((g) => g.controls).map((c) => [c.id, String(c.value)])) } : { file: data.file, content: data.files.find((f) => f.path === data.file)?.content };
-          const r = await openSession(env, url.origin, { ...data, auth: true, ownerName: name, forkOf: { session: loc.id, rev: data.rev, owner: data.owner }, base });
+          // A copy of the shared example is a plain session of its own: nobody there to export changes to.
+          const origin = loc.id === EXAMPLE_ID ? {} : { forkOf: { session: loc.id, rev: data.rev, owner: data.owner }, base };
+          const r = await openSession(env, url.origin, { ...data, auth: true, ownerName: name, ...origin });
           return json({ url: r.url, token: r.token, session: r.session });
         } catch (e) {
           return json({ error: e.message }, 400);

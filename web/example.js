@@ -106,7 +106,7 @@ export const EXAMPLE_HTML = `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Drop</title>
-  <link rel="stylesheet" href="motion.css">
+  <link rel="stylesheet" href="motion-example.css">
 </head>
 <body>
   <div class="scene">
@@ -118,19 +118,22 @@ export const EXAMPLE_HTML = `<!doctype html>
 </html>
 `;
 
+/** The shared example session (<id>.anni.run): set up by the Worker, never expires; everyone else gets a copy. */
+export const EXAMPLE_ID = 'motionexample';
+
 /** The session the prompt opens: the same two files an agent would upload. */
 export const EXAMPLE_SESSION = {
   files: [
     { path: 'index.html', content: EXAMPLE_HTML },
-    { path: 'motion.css', content: EXAMPLE_CSS },
+    { path: 'motion-example.css', content: EXAMPLE_CSS },
   ],
-  file: 'motion.css',
+  file: 'motion-example.css',
   preview: 'index.html',
   animation: 'hop',
 };
 
 /** The hero preview: the page with its stylesheet inlined, for an srcdoc iframe. */
-export const exampleDoc = () => EXAMPLE_HTML.replace('<link rel="stylesheet" href="motion.css">', `<style>\n${EXAMPLE_CSS}</style>`);
+export const exampleDoc = () => EXAMPLE_HTML.replace('<link rel="stylesheet" href="motion-example.css">', `<style>\n${EXAMPLE_CSS}</style>`);
 
 const kebab = (p) => p.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
 /** Keyframe members that are timing, not properties. */

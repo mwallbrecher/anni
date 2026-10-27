@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { describe, kindOf, modelFromText } from '../src/css.js';
 import { WAIT_DESCRIPTION, waitSeconds } from '../src/wait.js';
 import { versionOf } from './assets.js';
+import { EXAMPLE_ID } from '../web/example.js';
 
 const text = (t) => ({ content: [{ type: 'text', text: t }] });
 const fail = (e) => ({ ...text(`Error: ${e.message}`), isError: true });
@@ -48,6 +49,7 @@ export const isSessionId = (s) => typeof s === 'string' && /^[a-z0-9]{8,32}$/.te
 export async function openSession(env, origin, { files = [], file, animation, preview, session, schema, title, auth, ownerName, forkOf, base }, token) {
   if (!Array.isArray(files)) throw new Error('files must be an array');
   if (!schema && (!files.length || typeof file !== 'string')) throw new Error('files[] and file are required');
+  if (session === EXAMPLE_ID) throw new Error('The shared example session cannot be replaced – open a new session');
   const id = isSessionId(session) ? session : newId();
   const url = sessionUrl(env, origin, id);
   const r = await call(env, id, '/internal/open', { files, file, animation, preview, schema, title, auth, ownerName, forkOf, base, id, url }, token);
