@@ -286,26 +286,24 @@ const findDecl = (rule, prop) => {
 };
 
 /**
- * Adds a brand-new animation (created in the editor for a picked element): the @keyframes block
- * plus an `animation` entry for its selector. An existing rule with that exact selector gets the
- * entry appended to its shorthand / longhands so animations already on it keep working.
+ * Adds an `animation` entry for `name` to the rule with exactly this selector (a new rule at the end
+ * if there is none). An existing rule gets the entry appended to its shorthand / longhands so
+ * animations already on it keep working.
  */
-function createAnimation(parsed, anim) {
-  const root = parsed.roots[parsed.roots.length - 1];
-  if (!root) return;
-  const { selector } = anim.usage;
-  const t = anim.timing;
+function attachAnimation(parsed, selector, name, t) {
   let rule = null;
-  root.each((n) => {
-    if (!rule && n.type === 'rule' && n.selector === selector) rule = n;
-  });
+  for (const r of parsed.roots) {
+    r.each((n) => {
+      if (n.type === 'rule' && n.selector === selector) rule = n;
+    });
+  }
   const shorthand = rule && findDecl(rule, 'animation');
   const nameDecl = rule && findDecl(rule, 'animation-name');
-  if (shorthand) shorthand.value = `${shorthand.value}, ${formatShorthandEntry(anim.name, t, 'ms', false)}`;
+  if (shorthand) shorthand.value = `${shorthand.value}, ${formatShorthandEntry(name, t, 'ms', false)}`;
   else if (nameDecl) {
     // Longhand lists must stay aligned: pad missing longhands with their defaults for the existing entries.
     const count = splitTop(nameDecl.value, ',').length;
-    const values = { name: anim.name, duration: fmtTime(t.duration, 'ms'), delay: fmtTime(t.delay, 'ms'), easing: t.easing, iterations: t.iterations, direction: t.direction, fill: t.fill };
+    const values = { name, duration: fmtTime(t.duration, 'ms'), delay: fmtTime(t.delay, 'ms'), easing: t.easing, iterations: t.iterations, direction: t.direction, fill: t.fill };
     const defaults = { duration: '0s', delay: '0s', easing: 'ease', iterations: '1', direction: 'normal', fill: 'none' };
     for (const [key, prop] of Object.entries({ name: 'animation-name', ...LONGHANDS })) {
       const decl = findDecl(rule, prop);
@@ -315,9 +313,16 @@ function createAnimation(parsed, anim) {
   } else {
     rule = postcss.rule({ selector });
     rule.raws.before = '\n\n';
-    rule.append({ prop: 'animation', value: formatShorthandEntry(anim.name, t, 'ms', false) });
-    root.append(rule);
+    rule.append({ prop: 'animation', value: formatShorthandEntry(name, t, 'ms', false) });
+    parsed.roots[parsed.roots.length - 1].append(rule);
   }
+}
+
+/** Adds a brand-new animation (created in the editor for a picked element): the @keyframes block plus its `animation` entry. */
+function createAnimation(parsed, anim) {
+  const root = parsed.roots[parsed.roots.length - 1];
+  if (!root) return;
+  attachAnimation(parsed, anim.usage.selector, anim.name, anim.timing);
   const at = postcss.atRule({ name: 'keyframes', params: anim.name, nodes: [] });
   at.raws.before = '\n\n';
   root.append(at);
@@ -329,6 +334,8 @@ export function renderText(text, kind, model, from = model.file) {
   const parsed = parseText(text, kind, from);
   for (const anim of model.animations) {
     const f = parsed.found.get(anim.name);
+    // `applied` (set by the editor): further selectors that should run this existing animation too.
+    if (parsed.roots.length) for (const selector of anim.applied || []) attachAnimation(parsed, selector, anim.name, anim.timing);
     if (!f) {
       if (anim.usage?.create) createAnimation(parsed, anim);
       continue;
@@ -369,6 +376,8 @@ export function describe(anim) {
     .sort((a, b) => Math.min(...a.offsets) - Math.min(...b.offsets))
     .map((b) => `  ${b.offsets.map(fmtOffset).join(', ')} { ${b.decls.map((d) => `${d.prop}: ${d.value}${d.important ? ' !important' : ''};`).join(' ')} }`)
     .join('\n');
-  const usage = anim.usage ? `${anim.usage.selector} { animation: ${formatShorthandEntry(anim.name, anim.timing, 'ms', false)}; }` : '(no rule uses this animation)';
-  return `@keyframes ${anim.name} {\n${blocks}\n}\n${usage}`;
+  const entry = formatShorthandEntry(anim.name, anim.timing, 'ms', false);
+  const usage = anim.usage ? `${anim.usage.selector} { animation: ${entry}; }` : '(no rule uses this animation)';
+  const applied = (anim.applied || []).map((s) => `\n${s} { animation: ${entry}; } (applied in the editor)`).join('');
+  return `@keyframes ${anim.name} {\n${blocks}\n}\n${usage}${applied}`;
 }

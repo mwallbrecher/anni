@@ -1064,8 +1064,22 @@ function createAnimation(name, selector) {
     }),
   );
   if (S.el) S.el.names = [...S.el.names, name];
+  S.addOpen = false;
   setAnimation(name);
   toast(`@keyframes ${name} created – change a value to key it`);
+}
+
+/** Runs an existing @keyframes on the picked element too; Save adds the `animation` entry to its rule (see attachAnimation in css.js). */
+function applyAnimation(name, selector) {
+  if (!selector) return toast('Selector missing');
+  const a = S.model.animations.find((x) => x.name === name);
+  if (!a) return;
+  if (a.usage?.selector === selector || a.applied?.includes(selector)) return toast(`${selector} already runs “${name}”`);
+  change(() => (a.applied = [...(a.applied || []), selector]));
+  if (S.el) S.el.names = [...S.el.names, name];
+  S.addOpen = false;
+  setAnimation(name);
+  toast(`“${name}” applied to ${selector} – Save writes it to the file`);
 }
 
 function deleteSelected() {
@@ -1446,6 +1460,7 @@ function elInfo(el) {
 
 function selectElement(el) {
   S.el = elInfo(el);
+  S.addOpen = false;
   const own = S.el.names.find((n) => S.model.animations.some((a) => a.name === n));
   if (own && own !== S.name) setAnimation(own);
   else renderInspector();
@@ -1520,6 +1535,24 @@ function renderElementSection() {
   const inFile = el.names.filter((n) => S.model.animations.some((a) => a.name === n));
   const foreign = el.names.filter((n) => !inFile.includes(n));
   const nameInput = h('input', { value: suggestName(el), spellcheck: 'false', placeholder: 'name' });
+  const toggleAdd = () => ((S.addOpen = !S.addOpen), renderInspector());
+  const available = S.model.animations.filter((a) => !el.names.includes(a.name));
+  const addPanel = S.addOpen
+    ? h(
+        'div',
+        { class: 'add-anim' },
+        h('div', { class: 'add-head' }, 'Apply existing animation', h('span', { class: 'spacer' }), h('button', { class: 'ghost', title: 'Close', onclick: toggleAdd }, '×')),
+        h(
+          'div',
+          { class: 'chips' },
+          available.length
+            ? available.map((a) => h('button', { class: 'chip apply', title: `Run @keyframes ${a.name} on ${el.selector}`, onclick: () => applyAnimation(a.name, el.selector) }, a.name))
+            : h('span', { class: 'muted' }, 'Every animation of this file already runs here.'),
+        ),
+        h('div', { class: 'add-head' }, 'New animation'),
+        h('div', { class: 'row create' }, nameInput, h('button', { class: 'primary', onclick: () => createAnimation(nameInput.value.trim(), el.selector) }, 'Create')),
+      )
+    : h('div', { class: 'row' }, h('button', { class: 'primary', onclick: toggleAdd }, '+ Animation'));
 
   return h(
     'div',
@@ -1535,7 +1568,7 @@ function renderElementSection() {
       foreign.map((n) => h('span', { class: 'chip foreign', title: 'Not defined in this file' }, n)),
       !el.names.length && h('span', { class: 'muted' }, 'No animation on this element yet.'),
     ),
-    h('div', { class: 'row create' }, nameInput, h('button', { class: 'primary', onclick: () => createAnimation(nameInput.value.trim(), el.selector) }, '+ Animation')),
+    addPanel,
   );
 }
 
