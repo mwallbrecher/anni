@@ -5,7 +5,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { describe, isHtml, loadModel, render, save } from './css.js';
+import { describe, isHtml, kindOf, loadModel, mergeModel, modelFromText, render, save } from './css.js';
 
 export const PORT = Number(process.env.ANNI_PORT) || 4747;
 export const BASE_URL = `http://127.0.0.1:${PORT}`;
@@ -40,6 +40,7 @@ let session = null; // { file, preview, root, animation }
 let liveModel = null; // last model the editor sent (may contain unsaved edits)
 let dirty = false;
 let lastWritten = null;
+let fileVersion = 0; // counts changes from outside: a tab that hasn't reloaded since can't write its older state back
 const clients = new Set();
 
 const toUrlPath = (p) => p.split(path.sep).map(encodeURIComponent).join('/');
@@ -78,6 +79,7 @@ function commonDir(a, b) {
 
 function unwatch() {
   if (session) fs.unwatchFile(session.file);
+  if (session?.preview) fs.unwatchFile(session.preview);
 }
 
 export function openSession({ file, animation, preview }) {
@@ -104,9 +106,20 @@ export function openSession({ file, animation, preview }) {
       return;
     }
     if (text === lastWritten) return;
+    // Changed by the agent (or anyone): the open editor reloads, with its unsaved edits moved onto the new text.
+    // Half-written or broken CSS waits for the next change.
+    let conflicts = [];
+    try {
+      if (!modelFromText(text, kindOf(file), file).animations.length) return;
+      if (dirty && liveModel) ({ model: liveModel, conflicts } = mergeModel(lastWritten, text, kindOf(file), file, liveModel));
+    } catch {
+      return;
+    }
     lastWritten = text;
-    broadcast('external-change', { dirty });
+    fileVersion++;
+    broadcast('external-change', { dirty, conflicts });
   });
+  if (preview && preview !== file) fs.watchFile(preview, { interval: 400 }, () => broadcast('external-change', { dirty, conflicts: [] }));
   lastWritten = fs.readFileSync(file, 'utf8');
   broadcast('session', { file, animation: session.animation });
   return {
@@ -128,6 +141,7 @@ function sessionPayload() {
     session: {
       file: session.file,
       animation: session.animation,
+      fv: fileVersion,
       kind: model.kind,
       previewUrl: session.preview ? site(session.preview) : null,
       cssUrl: model.kind === 'css' ? site(session.file) : null,
@@ -222,13 +236,16 @@ async function handle(req, res) {
     return send(res, 200, { ok: true });
   }
   if (route === 'POST /api/render') {
-    const { model, dirty: isDirty } = await readBody(req);
-    liveModel = model;
-    dirty = !!isDirty;
+    const { model, dirty: isDirty, fv } = await readBody(req);
+    if (fv === undefined || fv === fileVersion) {
+      liveModel = model;
+      dirty = !!isDirty;
+    }
     return send(res, 200, { css: render(session.file, model).css });
   }
   if (route === 'POST /api/save') {
-    const { model } = await readBody(req);
+    const { model, fv } = await readBody(req);
+    if (fv !== undefined && fv !== fileVersion) return send(res, 409, { error: 'The file just changed on disk – the editor reloads with your edits on top. Save again then.', stale: true });
     const changed = save(session.file, model);
     lastWritten = fs.readFileSync(session.file, 'utf8');
     liveModel = model;

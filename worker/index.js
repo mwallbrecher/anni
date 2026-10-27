@@ -102,6 +102,16 @@ export default {
         return json({ error: e.message }, 400);
       }
     }
+    // The sidecar syncs edits to the uploaded files on disk into the open session.
+    const um = url.pathname.match(/^\/api\/sessions\/([a-z0-9]+)\/update$/);
+    if (um && request.method === 'POST') {
+      if (!isSessionId(um[1])) return json({ error: 'Bad session id' }, 400);
+      try {
+        return json(await call(env, um[1], '/internal/update', await request.json(), ownerToken));
+      } catch (e) {
+        return json({ error: e.message }, 400);
+      }
+    }
     if (url.pathname === '/api/ping') return json({ app: 'anni', hosted: true });
     if (url.pathname === '/api/version') return json({ version: versionOf(env) });
     if (url.pathname === '/api/session') return json({ session: null, hosted: true, mcpUrl: `${url.origin}/mcp`, ttlDays: 7, tokenRequired: !!env.ANNI_TOKEN });

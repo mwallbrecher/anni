@@ -54,6 +54,19 @@ export async function openSession(env, origin, { files = [], file, animation, pr
   return { ...r, session: id, url };
 }
 
+/** What update_files tells the agent. */
+export function updateNote(r) {
+  if (!r.changed.length) return 'Nothing changed – the session already has these files.';
+  return [
+    `Updated ${r.changed.join(', ')} in anni${r.clients ? ' – the open editor shows it now' : ' (no editor tab is open right now)'}.`,
+    r.dirty ? 'The user has unsaved edits; they stay on top of your change.' : null,
+    r.conflicts.length ? `You and the user both changed ${r.conflicts.join(', ')} – their unsaved values were kept. Check with get_animation_state.` : null,
+    r.skipped?.length ? `Skipped (too large): ${r.skipped.join(', ')}` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 /** The link that makes its opener the owner: the token rides in the #fragment, which never reaches a server. */
 export const ownerLink = (url, token) => (token ? `${url}#owner=${encodeURIComponent(token)}` : url);
 
@@ -111,7 +124,8 @@ export function createServer(env, origin) {
         'anni is hosted, so pass FILE CONTENTS: read the .css (or .html with <style>) file yourself and include it, plus the HTML page that uses it ' +
         'and small assets it links (other css) so the preview works. Returns a link the user opens in their browser. ' +
         'Afterwards call wait_for_save with the returned session id and token: it returns the edited file when the user saves, and you write it back to disk. ' +
-        'Pass `session` and `token` to update a session that is already open in a tab (e.g. after you changed the file).',
+        'When the user asks you to change the animation (add an element, a new @keyframes, other values), change your files and send them with ' +
+        'update_files: the open editor shows them right away and keeps the user’s unsaved edits. Pass `session` and `token` here only to open other files.',
       inputSchema: z.object({
         files: z.array(fileSchema).min(1).describe('The file with the @keyframes and, ideally, the HTML page that uses it plus linked CSS'),
         file: z.string().describe('Path (as given in files) of the file that contains the @keyframes to edit'),
@@ -144,6 +158,7 @@ export function createServer(env, origin) {
             list,
             '',
             `Next: call wait_for_save with session "${id}"${owner ? ' and the token' : ''}. When it returns saved=true, write its content to ${r.file} on disk.`,
+            'If you change these files meanwhile (the user asks you for more), send them with update_files – the editor shows the change at once.',
           ].join('\n'),
         );
       } catch (e) {
@@ -272,6 +287,29 @@ export function createServer(env, origin) {
     async ({ session, token }) => {
       try {
         return text((await call(env, session, '/internal/state', undefined, token)).text);
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    'update_files',
+    {
+      title: 'Show your file changes in the open editor',
+      description:
+        'Sends files you changed (the animation file, the preview page, its CSS – full content each, paths as in open_animation) to an open anni session. ' +
+        'The editor tab reloads with them at once, so the user sees your change live, and edits they have not saved yet stay on top of yours. ' +
+        'New files the page now links can be included too.',
+      inputSchema: z.object({
+        session: z.string().describe('Session id from open_animation'),
+        token: z.string().optional().describe('Owner token from open_animation'),
+        files: z.array(fileSchema).min(1).describe('The changed files, full content'),
+      }),
+    },
+    async ({ session, token, files }) => {
+      try {
+        return text(updateNote(await call(env, session, '/internal/update', { files }, token)));
       } catch (e) {
         return fail(e);
       }

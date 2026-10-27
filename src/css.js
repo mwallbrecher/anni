@@ -361,6 +361,42 @@ export function applyModel(text, kind, model, from) {
   return out;
 }
 
+/**
+ * The agent changed the file while the editor has unsaved edits (`live`, a model of `baseText`): the edits move
+ * onto `newText`. Per animation, keyframes the user changed stay theirs, otherwise the agent's win; timing goes
+ * field by field. Animations the agent added appear, ones it removed go (unless the user created them in the
+ * editor). Returns the merged model and the animations both of them changed (the user's version is kept).
+ */
+export function mergeModel(baseText, newText, kind, file, live) {
+  const before = new Map(modelFromText(baseText, kind, file).animations.map((a) => [a.name, a]));
+  const next = modelFromText(newText, kind, file);
+  const mine = new Map((live?.animations || []).map((a) => [a.name, a]));
+  const conflicts = [];
+  const animations = next.animations.map((theirs) => {
+    const ours = mine.get(theirs.name);
+    const base = before.get(theirs.name);
+    if (!ours || !base) return theirs;
+    const kfMine = normKeyframes(ours.keyframes) !== normKeyframes(base.keyframes);
+    const kfTheirs = normKeyframes(theirs.keyframes) !== normKeyframes(base.keyframes);
+    // `timingBase` (the values the page really used) moves along with the agent's changes, so only the user's are written.
+    const was = ours.timingBase || base.timing;
+    const timing = {};
+    const timingBase = {};
+    let clash = kfMine && kfTheirs;
+    for (const k of Object.keys(DEFAULT_TIMING)) {
+      const agent = theirs.timing[k] !== base.timing[k];
+      timingBase[k] = agent ? theirs.timing[k] : was[k];
+      timing[k] = ours.timing[k] !== was[k] ? ours.timing[k] : timingBase[k];
+      if (agent && ours.timing[k] !== was[k] && ours.timing[k] !== theirs.timing[k]) clash = true;
+    }
+    if (clash) conflicts.push(theirs.name);
+    return { ...ours, keyframes: kfMine ? ours.keyframes : theirs.keyframes, timing, ...(ours.timingBase ? { timingBase } : {}), usage: theirs.usage || ours.usage };
+  });
+  // Animations created in the editor (not in the file yet) stay.
+  for (const a of mine.values()) if (!before.has(a.name) && !next.animations.some((n) => n.name === a.name)) animations.push(a);
+  return { model: { ...next, animations }, conflicts };
+}
+
 /** Writes the model back into the file. Returns true if the file content changed. */
 export function save(file, model) {
   const text = fs.readFileSync(file, 'utf8');

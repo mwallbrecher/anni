@@ -1611,7 +1611,7 @@ function push() {
 /** Renders the model on the server and swaps the result into the preview; resolves once the preview is current. */
 async function pushNow() {
   const seq = ++pushSeq;
-  const { css } = await api('POST', '/api/render', { model: S.model, dirty: S.dirty });
+  const { css } = await api('POST', '/api/render', { model: S.model, dirty: S.dirty, fv: S.session.fv });
   if (seq !== pushSeq) return;
   S.css = css;
   applyCss();
@@ -2504,7 +2504,7 @@ async function saveModel() {
   const kept = picks().map((p) => ({ name: p.name, o: animBy(p.name).keyframes[p.bi].offsets[p.oi], primary: p.name === S.name && p.bi === S.sel.bi && p.oi === S.sel.oi }));
   try {
     const edits = await pendingEdits();
-    const r = await api('POST', '/api/save', { model: S.model, edits });
+    const r = await api('POST', '/api/save', { model: S.model, edits, fv: S.session.fv });
     S.model = r.model;
     S.saved = snapshot();
     S.dirty = false;
@@ -4538,12 +4538,14 @@ function listen() {
   events.addEventListener('live', () => followLiveState().catch(() => {}));
   events.addEventListener('closed', () => showLock({ closed: true })); // the owner closed the session
   events.addEventListener('session', () => load());
-  events.addEventListener('external-change', () => {
-    if (!S.dirty) return load({ keepTime: true }).then(() => toast('File changed on disk – reloaded'));
-    banner([
-      h('span', {}, 'The file was changed outside of anni.'),
-      h('button', { onclick: () => load({ keepTime: true }) }, 'Reload (discards your edits)'),
-    ]);
+  // The agent changed the files (a new element, another animation …): show it right away. The server has already
+  // moved unsaved edits onto the new text, so nothing is lost.
+  events.addEventListener('external-change', (e) => {
+    const { conflicts = [] } = JSON.parse(e.data || '{}');
+    const kept = S.dirty ? ' – your unsaved edits are kept' : '';
+    load({ keepTime: true }).then(() =>
+      toast(conflicts.length ? `Your agent changed ${conflicts.join(', ')} too – your unsaved values were kept` : `${S.session?.hosted ? 'Updated by your agent' : 'File changed on disk'}${kept}`),
+    );
   });
 }
 

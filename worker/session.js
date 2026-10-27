@@ -1,6 +1,6 @@
 // One editing session: the files an agent handed over, which of them is edited, the live model
 // with unsaved edits, SSE streams to open editor tabs, and agents waiting for the next save.
-import { applyModel, describe, kindOf, modelFromText, renderText } from '../src/css.js';
+import { applyModel, describe, kindOf, mergeModel, modelFromText, renderText } from '../src/css.js';
 import { editorAsset, isEditorAsset, versionOf } from './assets.js';
 import { changeMarkdown, changeSummary, cssChanges, lineDiff } from '../src/changes.js';
 
@@ -349,6 +349,7 @@ export class AnniSession {
         dirty: this.dirty,
         hosted: true,
         rev: this.meta.rev,
+        fv: this.meta.fv || 0,
         forkOf: this.meta.forkOf || null,
       },
       model,
@@ -448,6 +449,34 @@ body { display: grid !important; place-items: center !important; background: tra
     await this.persist();
     this.broadcast('session', { title: this.meta.title });
     return { kind: 'schema', title: this.meta.title, preview, controls: ids.size, clients: this.streams.size, rev: this.meta.rev };
+  }
+
+  /**
+   * The agent changed files of an open session (the sidecar syncs edits on disk, the remote MCP sends them): they
+   * replace the uploaded ones and open tabs reload. Unsaved edits in the editor are moved onto the new file
+   * (mergeModel). `fv` counts these updates, so a tab that hasn't reloaded yet can't write its older state back.
+   */
+  async updateFiles(files) {
+    if (!this.meta) throw new Error('No animation open in this session');
+    const { map, skipped } = AnniSession.intake(files);
+    const same = (a, b) => (typeof a === 'string' ? a === b : a?.b64 === b?.b64);
+    const changed = Object.keys(map).filter((p) => !same(map[p], this.files[p]));
+    if (!changed.length) return { changed, conflicts: [], dirty: this.dirty, skipped };
+    const f = this.meta.file;
+    let conflicts = [];
+    if (!this.isSchema && changed.includes(f)) {
+      if (typeof map[f] !== 'string') throw new Error(`"${f}" must be uploaded as text`);
+      const next = modelFromText(map[f], kindOf(f), f);
+      if (!next.animations.length) throw new Error(`No @keyframes left in ${f} – anni needs at least one`);
+      if (this.dirty && this.live) ({ model: this.live, conflicts } = mergeModel(this.files[f], map[f], kindOf(f), f, this.live));
+      const names = (this.live || next).animations.map((a) => a.name);
+      if (!names.includes(this.meta.animation)) this.meta.animation = names[0];
+    }
+    Object.assign(this.files, map);
+    this.meta.fv = (this.meta.fv || 0) + 1;
+    await this.persist();
+    this.broadcast('external-change', { files: changed, conflicts, dirty: this.dirty });
+    return { changed, conflicts, dirty: this.dirty, clients: this.streams.size, skipped };
   }
 
   /** Resolves when the editor saves a revision newer than `since`, or after `timeout` ms. */
@@ -559,6 +588,7 @@ body { display: grid !important; place-items: center !important; background: tra
       if (url.pathname.startsWith('/internal/')) {
         if (this.meta?.owner?.api && !who.isOwner) return json({ error: 'This anni session belongs to someone else (owner token missing or wrong)' }, 403);
         if (route === 'POST /internal/open') return json(await this.open(await request.json()));
+        if (route === 'POST /internal/update') return json(await this.updateFiles((await request.json()).files || []));
         if (route === 'GET /internal/state') return json({ text: this.closedAt && !this.meta ? 'The user closed this anni session; everything in it was deleted.' : this.stateText(), dirty: this.dirty, hasSession: !!this.meta, closed: !this.meta && !!this.closedAt, rev: this.meta?.rev || 0 });
         if (route === 'GET /internal/wait') {
           const since = Number(url.searchParams.get('since') || 0);
@@ -704,9 +734,10 @@ body { display: grid !important; place-items: center !important; background: tra
         return json({ ok: true });
       }
       if (route === 'POST /api/render') {
-        const { model, values, dirty } = await request.json();
-        // Only the editing tab's state counts; watchers get their preview CSS and nothing else.
-        if (editor) {
+        const { model, values, dirty, fv } = await request.json();
+        // Only the editing tab's state counts; watchers get their preview CSS and nothing else. A tab that hasn't
+        // reloaded since the agent changed the files (older fv) is about to – its state is from before.
+        if (editor && (fv === undefined || fv === (this.meta.fv || 0))) {
           this.dirty = !!dirty;
           this.live = this.isSchema ? values || null : model;
           this.followLive();
@@ -716,7 +747,8 @@ body { display: grid !important; place-items: center !important; background: tra
       }
       if (route === 'POST /api/save') {
         if (!editor) return json({ error: who.isOwner ? 'This session is being edited in another tab' : 'Only the owner can save – edit a copy instead' }, 403);
-        const { model, values, edits = [] } = await request.json();
+        const { model, values, edits = [], fv } = await request.json();
+        if (fv !== undefined && fv !== (this.meta.fv || 0)) return json({ error: 'Your agent just changed the file – the editor reloads with your edits on top. Save again then.', stale: true }, 409);
         if (this.isSchema) return json(await this.saveSchema(values || {}));
         const before = this.files[this.meta.file];
         const after = model ? applyModel(before, kindOf(this.meta.file), model, this.meta.file) : before;

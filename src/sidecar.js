@@ -176,6 +176,8 @@ server.registerTool(
       'Opens a CSS animation (@keyframes) from a local file in anni (the hosted timeline editor): the user scrubs, drags keyframes and edits ' +
       'values and timing in the browser. Pass PATHS only – this tool reads and uploads the files itself and opens the browser tab. ' +
       'Afterwards call wait_for_save: it writes the edited file back to disk when the user saves and returns a short diff. ' +
+      'While the session is open, edits you make to these files on disk (the user asks for a new element or animation) show up in the ' +
+      'editor right away, with the user’s unsaved edits kept on top – just edit the files, no need to open them again. ' +
       'The file can be a .css file or an .html file with <style> blocks.',
     inputSchema: {
       file: z.string().describe('Path to the .css or .html file containing the @keyframes (absolute, or relative to the working directory)'),
@@ -188,7 +190,14 @@ server.registerTool(
   async (args) => {
     try {
       const { lines } = await openAnimation(args);
-      return text([...lines, '', 'Next: call wait_for_save. It writes the edited file to disk when the user saves and returns the diff.'].join('\n'));
+      return text(
+        [
+          ...lines,
+          '',
+          'Next: call wait_for_save. It writes the edited file to disk when the user saves and returns the diff.',
+          'If the user asks for more meanwhile, edit the files on disk – the open editor shows each change at once.',
+        ].join('\n'),
+      );
     } catch (e) {
       return fail(e);
     }
@@ -206,8 +215,10 @@ async function openAnimation({ file, animation, preview, extra_files = [], sessi
   const token = r.token || tokenOf(session);
   const local = Object.fromEntries(b.abs.map((p) => [rel(p), p]));
   const uploaded = Object.fromEntries(files.filter((f) => !f.encoding).map((f) => [f.path, f.content]));
-  sessions.set(r.session, { file: abs, rel: rel(abs), uploaded, local, rev: r.rev, token });
+  const mtimes = Object.fromEntries(Object.entries(local).map(([p, a]) => [p, fs.statSync(a).mtimeMs]));
+  sessions.set(r.session, { file: abs, rel: rel(abs), relOf: rel, uploaded, local, mtimes, rev: r.rev, token });
   lastSession = r.session;
+  watchFiles();
   const browser = !r.clients && !process.env.ANNI_NO_BROWSER;
   if (browser) openBrowser(ownerLink(r.url, token));
   const lines = [
@@ -226,12 +237,79 @@ async function openAnimation({ file, animation, preview, extra_files = [], sessi
   return { r, lines };
 }
 
+/*
+ * Live sync: while a session is open its uploaded files are watched. When one changes on disk (the agent edited it
+ * because the user asked for more), the new content goes to the session and the open editor reloads with it, the
+ * user's unsaved edits on top. Files a changed page now links are uploaded too. What wait_for_save writes is
+ * already known (uploaded) and not sent back.
+ */
+const SYNC_MS = 400;
+let syncTimer = null;
+function watchFiles() {
+  syncTimer ||= setInterval(() => {
+    for (const [id, s] of sessions) if (s.local && !s.syncing) syncFiles(id, s).catch(() => {});
+  }, SYNC_MS);
+  syncTimer.unref?.();
+}
+
+async function syncFiles(id, s) {
+  const files = [];
+  const linked = new Set();
+  for (const [p, abs] of Object.entries(s.local)) {
+    let mtime;
+    try {
+      mtime = fs.statSync(abs).mtimeMs;
+    } catch {
+      continue; // deleted or mid-write
+    }
+    if (mtime === s.mtimes[p] || s.uploaded[p] === undefined) continue;
+    s.mtimes[p] = mtime;
+    const content = fs.readFileSync(abs, 'utf8');
+    if (content === s.uploaded[p]) continue;
+    files.push({ path: p, content });
+    if (/\.html?$/i.test(abs)) for (const a of linkedAssets(abs)) linked.add(a);
+  }
+  for (const a of linked) {
+    const p = s.relOf(a);
+    if (!p.startsWith('..') && !(p in s.local)) files.push({ ...readUpload(a, p), abs: a });
+  }
+  if (!files.length) return;
+  s.syncing = true;
+  try {
+    const r = await api('POST', `/api/sessions/${id}/update`, { files: files.map(({ abs, ...f }) => f) }, s.token);
+    for (const f of files) {
+      if (f.abs) {
+        s.local[f.path] = f.abs;
+        s.mtimes[f.path] = fs.statSync(f.abs).mtimeMs;
+      }
+      if (!f.encoding) s.uploaded[f.path] = f.content;
+    }
+    s.syncError = null;
+    if (r.conflicts?.length) s.conflicts = r.conflicts;
+  } catch (e) {
+    s.syncError = `${files.map((f) => f.path).join(', ')}: ${e.message}`; // sent again on the next change
+  } finally {
+    s.syncing = false;
+  }
+}
+
+/** What the agent should know about live sync, for wait_for_save and get_animation_state. */
+function syncNote(s) {
+  const out = [];
+  if (s?.syncError) out.push(`Your last change on disk did NOT reach the editor – ${s.syncError}. Fix the file; it is sent again when it changes.`);
+  if (s?.conflicts?.length) {
+    out.push(`You and the user both changed ${s.conflicts.join(', ')} – the editor kept the user’s unsaved values.`);
+    s.conflicts = null;
+  }
+  return out.join('\n');
+}
+
 /** One long-poll for a save in an animation session; on save writes the changed files to disk. Returns { saved, text }. */
 async function waitForSave(session, seconds, again = 'wait_for_save') {
   const s = session && sessions.get(session);
   if (!s) throw new Error(session ? `Unknown session "${session}" (sessions are tracked per sidecar process)` : 'No session open – call open_animation first');
   const r = await waitApi(session, s.rev, seconds);
-  if (!r.saved) return { saved: false, text: noSaveYet(r, again) };
+  if (!r.saved) return { saved: false, text: [noSaveYet(r, again), syncNote(s)].filter(Boolean).join('\n') };
   s.rev = r.rev;
   // Every uploaded file anni changed (the animation file, and stylesheets edited in the Editor view) comes back whole.
   const out = [`Saved revision ${r.rev}.`];
@@ -577,7 +655,8 @@ server.registerTool(
   async ({ session = lastSession }) => {
     try {
       if (!session) throw new Error('No session open – call open_animation first');
-      return text((await api('GET', `/api/sessions/${session}/state`, undefined, tokenOf(session))).text);
+      const state = (await api('GET', `/api/sessions/${session}/state`, undefined, tokenOf(session))).text;
+      return text([state, syncNote(sessions.get(session))].filter(Boolean).join('\n\n'));
     } catch (e) {
       return fail(e);
     }
