@@ -169,6 +169,7 @@ export function createServer(env, origin) {
     async ({ session, token, since_rev, timeout_seconds }) => {
       try {
         const state = await call(env, session, '/internal/state', undefined, token);
+        if (state.closed) return text('The user closed this anni session – everything in it was deleted. Saves they made before reached you already; open_animation starts a new session if they want to go on.');
         if (!state.hasSession) throw new Error(`Unknown session "${session}"`);
         const since = since_rev ?? state.rev;
         const r = await call(env, session, `/internal/wait?since=${since}&timeout=${waitSeconds(timeout_seconds) * 1000}`, undefined, token);
@@ -249,6 +250,7 @@ export function createServer(env, origin) {
     async ({ session, token, since_rev, timeout_seconds }) => {
       try {
         const state = await call(env, session, '/internal/state', undefined, token);
+        if (state.closed) return text('The user closed this anni session – everything in it was deleted. Saves they made before reached you already; open_animation starts a new session if they want to go on.');
         if (!state.hasSession) throw new Error(`Unknown session "${session}"`);
         const r = await call(env, session, `/internal/wait?since=${since_rev ?? state.rev}&timeout=${waitSeconds(timeout_seconds) * 1000}`, undefined, token);
         if (!r.saved) return text(`No save yet (timeout). The editor ${r.dirty ? 'has unsaved edits' : 'has no pending edits'}. Call wait_for_changes again to keep waiting.`);

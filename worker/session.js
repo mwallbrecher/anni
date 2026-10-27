@@ -76,7 +76,8 @@ export class AnniSession {
 
   /** Files are stored one per key (`file:<path>`, text or { b64 }) so a snapshot with fonts fits the per-value limit. */
   async restore() {
-    const m = await this.ctx.storage.get(['meta', 'files:index', 'files']);
+    const m = await this.ctx.storage.get(['meta', 'files:index', 'files', 'closed']);
+    this.closedAt = m.get('closed')?.at || null; // the owner closed this session: only this mark is left
     this.meta = m.get('meta') || null; // { kind, file, preview, animation, rev, savedAt } or the schema variant
     this.files = m.get('files') || {}; // legacy single-key layout
     const index = m.get('files:index') || [];
@@ -150,7 +151,7 @@ export class AnniSession {
       editor: this.editorFor(who),
       mode: this.mode(),
       owner: this.meta.owner?.name || null,
-      ...(who.isOwner ? { requests: guests.filter((g) => g.status === 'pending'), allowed: guests.filter((g) => g.status === 'approved'), proposals: this.meta.proposals || [], rev: this.meta.rev } : {}),
+      ...(who.isOwner ? { requests: guests.filter((g) => g.status === 'pending'), allowed: guests.filter((g) => g.status === 'approved'), proposals: this.meta.proposals || [], rev: this.meta.rev, deliveredRev: this.meta.deliveredRev || 0 } : {}),
     };
   }
 
@@ -233,7 +234,42 @@ export class AnniSession {
     this.meta = null;
     this.files = {};
     this.live = null;
+    this.closedAt = null;
     await this.ctx.storage.deleteAll();
+  }
+
+  /**
+   * The owner closes the session: open tabs are told and disconnected, a waiting agent hears it was closed, and
+   * everything stored is deleted – files, names, guests, proposals. A bare "closed" mark (a timestamp) stays for
+   * the usual 7 days so the link says so instead of showing the homepage, then it goes too.
+   */
+  async closeSession() {
+    this.broadcast('closed', {});
+    for (const c of this.streams.keys()) {
+      try {
+        c.close();
+      } catch {}
+    }
+    this.streams.clear();
+    for (const w of this.waiters) w.resolve('closed');
+    this.waiters.clear();
+    this.meta = null;
+    this.files = {};
+    this.live = null;
+    this.dirty = false;
+    this.editTab = null;
+    await this.ctx.storage.deleteAll();
+    this.closedAt = Date.now();
+    await this.ctx.storage.put('closed', { at: this.closedAt });
+    await this.ctx.storage.setAlarm(Date.now() + TTL_MS);
+  }
+
+  /** The agent received the latest save (wait_for_save returned it). */
+  markDelivered() {
+    if (!this.meta || this.meta.deliveredRev === this.meta.rev) return;
+    this.meta.deliveredRev = this.meta.rev;
+    this.ctx.storage.put('meta', this.meta);
+    this.broadcast('access', {}, (s) => s.role === 'owner');
   }
 
   async persist() {
@@ -340,6 +376,10 @@ body { display: grid !important; place-items: center !important; background: tra
    * gets an owner token, returned once; it starts in request mode. Re-opening keeps owner, mode and guests.
    */
   async open(body) {
+    if (this.closedAt) {
+      await this.ctx.storage.delete('closed'); // the agent opens this id again: a new session
+      this.closedAt = null;
+    }
     const fresh = !this.meta;
     const access = this.carryAccess(this.meta);
     let token = null;
@@ -412,9 +452,19 @@ body { display: grid !important; place-items: center !important; background: tra
 
   /** Resolves when the editor saves a revision newer than `since`, or after `timeout` ms. */
   waitForSave(since, timeout) {
-    if (this.meta && this.meta.rev > since) return Promise.resolve(this.saveResult(true));
+    if (!this.meta && this.closedAt) return Promise.resolve({ saved: false, closed: true, rev: 0, dirty: false });
+    if (this.meta && this.meta.rev > since) {
+      this.markDelivered();
+      return Promise.resolve(this.saveResult(true));
+    }
     return new Promise((resolve) => {
-      const w = { resolve: (saved) => resolve(this.saveResult(saved)) };
+      const w = {
+        resolve: (saved) => {
+          if (saved === 'closed') return resolve({ saved: false, closed: true, rev: 0, dirty: false });
+          if (saved) this.markDelivered();
+          resolve(this.saveResult(saved));
+        },
+      };
       this.waiters.add(w);
       setTimeout(() => {
         if (this.waiters.delete(w)) w.resolve(false);
@@ -509,7 +559,7 @@ body { display: grid !important; place-items: center !important; background: tra
       if (url.pathname.startsWith('/internal/')) {
         if (this.meta?.owner?.api && !who.isOwner) return json({ error: 'This anni session belongs to someone else (owner token missing or wrong)' }, 403);
         if (route === 'POST /internal/open') return json(await this.open(await request.json()));
-        if (route === 'GET /internal/state') return json({ text: this.stateText(), dirty: this.dirty, hasSession: !!this.meta, rev: this.meta?.rev || 0 });
+        if (route === 'GET /internal/state') return json({ text: this.closedAt && !this.meta ? 'The user closed this anni session; everything in it was deleted.' : this.stateText(), dirty: this.dirty, hasSession: !!this.meta, closed: !this.meta && !!this.closedAt, rev: this.meta?.rev || 0 });
         if (route === 'GET /internal/wait') {
           const since = Number(url.searchParams.get('since') || 0);
           const timeout = Math.min(Number(url.searchParams.get('timeout') || 45000), 55000); // MCP clients give up at 60 s
@@ -537,7 +587,7 @@ body { display: grid !important; place-items: center !important; background: tra
       if (route === 'GET /api/ping') return json({ app: 'anni', hosted: true });
       if (route === 'GET /api/version') return json({ version: versionOf(this.env) });
       if (route === 'GET /api/session') {
-        if (!this.meta) return json(this.payload(base));
+        if (!this.meta) return json(this.closedAt ? { session: null, hosted: true, closed: { at: this.closedAt } } : this.payload(base));
         if (who.claimable) return json({ session: null, hosted: true, claimable: true });
         if (who.role === 'none') return json({ session: null, hosted: true, locked: this.lockedInfo(who) });
         return json({ ...this.payload(base), access: this.accessInfo(who) });
@@ -576,6 +626,12 @@ body { display: grid !important; place-items: center !important; background: tra
       }
       if (route === 'GET /api/state') return json({ text: this.stateText(), dirty: this.dirty, hasSession: true });
 
+      // The owner closes the session for good (the editor asks first).
+      if (route === 'POST /api/close') {
+        if (!who.isOwner) return json({ error: 'Only the owner can close this session' }, 403);
+        await this.closeSession();
+        return json({ ok: true });
+      }
       // Proposals from copies: the owner reads (marks read) or dismisses them.
       if (route === 'GET /api/proposal' || route === 'POST /api/proposal/dismiss') {
         if (!who.isOwner) return json({ error: 'Only the owner can do this' }, 403);

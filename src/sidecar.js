@@ -82,7 +82,9 @@ async function waitApi(session, rev, seconds) {
   }
 }
 
+const CLOSED = 'The user closed this anni session – everything in it was deleted. Saves they made before reached you already; open_animation starts a new session if they want to go on.';
 const noSaveYet = (r, again) =>
+  r.closed ? CLOSED :
   `No save yet (${r.late ? 'anni answered late' : 'timeout'}). ${r.late ? '' : `The editor ${r.dirty ? 'has unsaved edits' : 'has no pending edits'}. `}Call ${again} again to keep waiting.`;
 
 /** Looks next to (and one level above) a CSS file for an HTML page that links it. */

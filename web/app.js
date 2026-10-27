@@ -139,6 +139,7 @@ async function load({ keepTime = false } = {}) {
     await api('POST', '/api/claim', { token: tokenCookie('anni_owner'), name: myName() || null });
     return load({ keepTime });
   }
+  if (data.closed) return showLock({ closed: true });
   if (data.locked) return showLock(data.locked);
   stopLockPoll();
   S.access = data.access || null; // hosted only: { role, editor, mode, owner, requests?, allowed? }
@@ -237,6 +238,7 @@ function stopLockPoll() {
 
 /** A browser without access: what it may do depends on the mode. The page checks back every few seconds. */
 function showLock(lock) {
+  if (lock.closed) { S.dirty = false; document.title = 'anni'; } // nothing left to save or lose
   S.session = null;
   S.model = null;
   S.access = null;
@@ -251,7 +253,9 @@ function showLock(lock) {
   const owner = lock.owner || 'the person who shared it';
   const logo = h('img', { class: 'logo big', src: 'brand/anni-logo.png', alt: 'anni' });
   const card = $('.empty-card');
-  if (lock.mode === 'locked') {
+  if (lock.closed) {
+    card.replaceChildren(logo, h('h1', {}, 'This session was closed'), h('p', {}, 'Everything in it was deleted.'), h('p', { class: 'muted' }, 'To go on, ask your agent to open the animation in anni again – that starts a new session.'));
+  } else if (lock.mode === 'locked') {
     card.replaceChildren(logo, h('h1', {}, 'This session is locked'), h('p', {}, `Only ${owner} can open it right now.`), h('p', { class: 'muted' }, `If you need it, ask ${lock.owner || 'them'} directly to switch it to “Request” or “Public”.`));
   } else if (lock.request === 'pending') {
     card.replaceChildren(logo, h('h1', {}, 'Request sent'), h('p', {}, `Waiting for ${owner} to let you in.`), h('p', { class: 'muted' }, 'This page opens by itself once you are in.'));
@@ -278,7 +282,7 @@ function showLock(lock) {
       h('div', { class: 'lock-form', onkeydown: (e) => e.key === 'Enter' && send() }, name, note, h('button', { class: 'chrome-btn', onclick: send }, 'Request access')),
     );
   }
-  if (!lockPoll) {
+  if (!lockPoll && !lock.closed) {
     lockPoll = setInterval(async () => {
       try {
         const d = await api('GET', '/api/session');
@@ -356,6 +360,64 @@ async function exportChanges() {
   }
 }
 $('#export').onclick = exportChanges;
+
+/**
+ * Closing deletes the session for good (files, access, proposals; the owner's files on disk stay). The owner
+ * confirms – and is told about work that hasn't reached the code: unsaved edits, or a save no agent picked up.
+ */
+function confirmClose() {
+  toggleAccessPop(false);
+  $('#close-overlay')?.remove();
+  const a = S.access || {};
+  const close = () => $('#close-overlay')?.remove();
+  const warnings = [];
+  if (S.dirty) {
+    warnings.push(h('li', {}, 'You have unsaved edits – closing throws them away. ', h('button', { onclick: async () => (await saveNow(), confirmClose()) }, 'Save first')));
+  }
+  if ((a.rev || 0) > (a.deliveredRev || 0)) {
+    const schema = S.session?.kind === 'schema';
+    warnings.push(
+      h(
+        'li',
+        {},
+        `Your last save (revision ${a.rev}) hasn’t reached your code yet – no agent picked it up. `,
+        schema ? 'Ask your agent to call wait_for_changes before you close.' : h('button', { onclick: downloadSaved }, 'Download the file'),
+      ),
+    );
+  }
+  const doClose = async () => {
+    try {
+      await api('POST', '/api/close', {});
+      close();
+      showLock({ closed: true });
+    } catch (e) {
+      toast(e.message);
+    }
+  };
+  document.body.append(
+    h(
+      'div',
+      { class: 'keys-backdrop', id: 'close-overlay', onclick: (e) => e.target === e.currentTarget && close() },
+      h(
+        'div',
+        { class: 'keys-panel close-panel', role: 'alertdialog', 'aria-label': 'Close the session' },
+        h('h2', {}, 'Close this session?'),
+        h('p', {}, 'You’re about to close the session. This can’t be undone, but you can always start it in a new session.'),
+        h('p', { class: 'muted' }, 'Everything stored for it is deleted – the files, who has access, exported changes. Your own files on disk stay as they are.'),
+        warnings.length ? h('ul', { class: 'close-warnings' }, warnings) : null,
+        h('div', { class: 'row' }, h('span', { class: 'spacer' }), h('button', { onclick: close }, 'Cancel'), h('button', { class: 'danger-solid', onclick: doClose }, 'Close session')),
+      ),
+    ),
+  );
+}
+
+/** The edited file as last saved in the session, for when no agent has picked it up. */
+async function downloadSaved() {
+  const file = S.session?.file;
+  if (!file) return;
+  const res = await fetch(`${BASE}/site/${file.split('/').map(encodeURIComponent).join('/')}`);
+  downloadText((await res.text()).replace(/ data-anni-src="\d+"/g, ''), file.split('/').pop()); // without the editor's style tags
+}
 
 /** The owner reads a proposal: the brief the coding agent gets, to copy, download or dismiss. */
 async function viewProposal(id) {
@@ -460,6 +522,7 @@ function renderAccessPop() {
     ),
     h('section', {}, h('h3', {}, 'You'), h('label', { class: 'field' }, h('span', {}, 'Name'), nameInput), h('p', { class: 'muted' }, 'Shown to people who ask for access. Only you can edit; others watch and can edit a copy.')),
     h('button', { class: 'chrome-btn share', onclick: () => navigator.clipboard.writeText(shareLink).then(() => toast('Link copied – people have to ask for access unless the session is public')) }, 'Copy link'),
+    h('button', { class: 'danger close-session', onclick: confirmClose }, 'Close session …'),
   ];
   pop.replaceChildren(...parts.filter(Boolean)); // replaceChildren would print a null as "null"
 }
@@ -3599,6 +3662,10 @@ addEventListener(
   'keydown',
   (e) => {
     if (e.target.matches?.('input, select, textarea')) return;
+    if (e.key === 'Escape' && $('#close-overlay')) {
+      e.stopImmediatePropagation();
+      return $('#close-overlay').remove();
+    }
     if (e.key === 'Escape' && $('#proposal-overlay')) {
       e.stopImmediatePropagation();
       return $('#proposal-overlay').remove();
@@ -3788,6 +3855,7 @@ function listen() {
   events.addEventListener('version', (e) => checkVersion(JSON.parse(e.data).version));
   events.addEventListener('access', () => refreshAccess().catch(() => {}));
   events.addEventListener('live', () => followLiveState().catch(() => {}));
+  events.addEventListener('closed', () => showLock({ closed: true })); // the owner closed the session
   events.addEventListener('session', () => load());
   events.addEventListener('external-change', () => {
     if (!S.dirty) return load({ keepTime: true }).then(() => toast('File changed on disk – reloaded'));
