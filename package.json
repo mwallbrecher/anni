@@ -1,6 +1,6 @@
 {
   "name": "anni-mcp",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "anni: your agent turns values from your code into controls on the real page – CSS animations on a timeline, styles, any literal – and writes them back. This package is the local MCP sidecar for https://anni.run (and self-hosted instances).",
   "license": "MIT",
   "repository": {
