@@ -2230,6 +2230,76 @@ function onTimelineWheel(e) {
 $('#tracks').addEventListener('wheel', onTimelineWheel, { passive: false });
 // The empty area below the last row is part of the canvas too: a drag there starts a selection box.
 $('#tracks').addEventListener('pointerdown', (e) => e.target === e.currentTarget && startMarquee(e));
+
+/* ---------- resizable panel and timeline ---------- */
+
+/*
+ * The panel's left edge and the timeline's top edge can be dragged to give the preview more or less room.
+ * Sizes are CSS variables (--panel-w, --tl-h) and are remembered per browser; double-click a handle to reset.
+ */
+const LAYOUT_KEY = 'anni.layout';
+let layout = {};
+try {
+  layout = JSON.parse(localStorage.getItem(LAYOUT_KEY)) || {};
+} catch {}
+
+// The preview keeps at least ~240 px either way; the timeline keeps its transport bar, ruler and one row.
+const LIMITS = {
+  panel: () => [240, Math.max(240, innerWidth - 240)],
+  timeline: () => [90, Math.max(90, innerHeight - 240)],
+};
+
+/** Applies the stored sizes, clamped to the current window (a size saved on a big screen still fits a small one). */
+function applyLayout() {
+  const root = document.documentElement.style;
+  for (const [key, prop] of [['panel', '--panel-w'], ['timeline', '--tl-h']]) {
+    if (layout[key]) root.setProperty(prop, `${clamp(layout[key], ...LIMITS[key]())}px`);
+    else root.removeProperty(prop);
+  }
+}
+
+function saveLayout() {
+  try {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
+  } catch {}
+}
+
+function resizer(el, key, axis, measure) {
+  el.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    try {
+      el.setPointerCapture(e.pointerId);
+    } catch {}
+    el.classList.add('active');
+    document.body.classList.add('resizing', axis);
+    const move = (ev) => {
+      layout[key] = Math.round(measure(ev));
+      applyLayout();
+    };
+    const up = () => {
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', up);
+      el.classList.remove('active');
+      document.body.classList.remove('resizing', axis);
+      saveLayout();
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+  });
+  el.addEventListener('dblclick', () => {
+    delete layout[key];
+    applyLayout();
+    saveLayout();
+  });
+}
+
+resizer($('#panel-resizer'), 'panel', 'col', (e) => clamp(innerWidth - e.clientX, ...LIMITS.panel()));
+resizer($('#tl-resizer'), 'timeline', 'row', (e) => clamp(innerHeight - e.clientY, ...LIMITS.timeline()));
+addEventListener('resize', applyLayout);
+applyLayout();
 $('#tl-zoom').onclick = resetTimelineView;
 
 /** Re-renders the timeline when the set of animated elements on the page changed (e.g. started by script). */
