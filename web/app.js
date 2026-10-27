@@ -1681,10 +1681,14 @@ function numberInput(value, unit, onValue) {
   return h('div', { class: 'unit', 'data-unit': unit }, input);
 }
 
-function curveSvg(easing) {
+/** Control points of an easing (keywords included), or null when it isn't a cubic Bézier. */
+function bezierOf(easing) {
   const m = easing.match(/^cubic-bezier\(([^)]+)\)$/);
   const pts = BEZIER[easing] || (m && m[1].split(',').map(Number));
-  if (!pts || pts.length !== 4 || pts.some(Number.isNaN)) return h('p', { class: 'note' }, 'No curve preview for this function.');
+  return pts && pts.length === 4 && !pts.some(Number.isNaN) ? [...pts] : null;
+}
+
+function drawCurve(svg, pts) {
   const W = 280;
   const H = 70;
   const pad = 10;
@@ -1693,9 +1697,6 @@ function curveSvg(easing) {
   const hi = Math.max(...ys);
   const x = (v) => pad + v * (W - 2 * pad);
   const y = (v) => H - pad - ((v - lo) / (hi - lo || 1)) * (H - 2 * pad);
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-  svg.setAttribute('class', 'curve');
   // The two control points get their own colours, shared with their numbers below the curve.
   svg.innerHTML = `
     <defs><linearGradient id="curve-grad" x1="0" x2="1"><stop offset="0" stop-color="#e97130"/><stop offset="1" stop-color="#f6d3bf"/></linearGradient></defs>
@@ -1703,15 +1704,62 @@ function curveSvg(easing) {
     <path d="M${x(1)} ${y(1)} L${x(pts[2])} ${y(pts[3])}" stroke="#f6d3bf" stroke-opacity="0.45" stroke-width="1"/>
     <path d="M${x(0)} ${y(0)} C${x(pts[0])} ${y(pts[1])} ${x(pts[2])} ${y(pts[3])} ${x(1)} ${y(1)}" fill="none" stroke="url(#curve-grad)" stroke-width="1.5"/>
     <circle cx="${x(pts[0])}" cy="${y(pts[1])}" r="2.5" fill="#e97130"/><circle cx="${x(pts[2])}" cy="${y(pts[3])}" r="2.5" fill="#f6d3bf"/>`;
-  // The cubic-bezier() values, also for keywords (ease = 0.25, 0.1, 0.25, 1), so they can be read off and reused.
-  const num = (v) => String(+v.toFixed(2));
-  const values = h(
-    'div',
-    { class: 'curve-values', title: `cubic-bezier(${pts.map(num).join(', ')})` },
-    h('span', { class: 'p1' }, `${num(pts[0])}, ${num(pts[1])}`),
-    ', ',
-    h('span', { class: 'p2' }, `${num(pts[2])}, ${num(pts[3])}`),
-  );
+}
+
+/**
+ * Easing graph with its cubic-bezier() values below it – also for keywords (ease = 0.25, 0.1, 0.25, 1).
+ * The values are fields: type (comma or point), or ↑/↓ by 0.01 (Shift: 0.1). Each edit redraws the curve and
+ * calls onEasing with the new cubic-bezier(…). x values stay within 0–1, as CSS requires.
+ */
+function curveEditor(easing, onEasing) {
+  const pts = bezierOf(easing);
+  if (!pts) return h('p', { class: 'note' }, 'No curve preview for this function.');
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 280 70');
+  svg.setAttribute('class', 'curve');
+  drawCurve(svg, pts);
+  const num = (v) => String(+v.toFixed(3));
+  const fit = (input) => (input.style.width = `${Math.max(1, input.value.length) + 0.6}ch`);
+  const commit = () => {
+    drawCurve(svg, pts);
+    onEasing(`cubic-bezier(${pts.map(num).join(', ')})`);
+  };
+  const field = (i) => {
+    const isX = i % 2 === 0;
+    const input = h('input', {
+      class: `bz ${i < 2 ? 'p1' : 'p2'}`,
+      value: num(pts[i]),
+      inputmode: 'decimal',
+      spellcheck: 'false',
+      title: `${isX ? 'x' : 'y'}${i < 2 ? 1 : 2}${isX ? ' (0–1)' : ''}`,
+      oninput: (e) => {
+        const v = parseFloat(e.target.value.replace(',', '.'));
+        fit(e.target);
+        if (Number.isNaN(v)) return;
+        pts[i] = isX ? clamp(v, 0, 1) : v;
+        commit();
+      },
+      onkeydown: (e) => {
+        if (e.key === 'Enter' || e.key === 'Escape') return e.target.blur();
+        if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+        e.preventDefault();
+        const step = (e.shiftKey ? 0.1 : 0.01) * (e.key === 'ArrowUp' ? 1 : -1);
+        pts[i] = Math.round((pts[i] + step) * 1000) / 1000;
+        if (isX) pts[i] = clamp(pts[i], 0, 1);
+        e.target.value = num(pts[i]);
+        fit(e.target);
+        commit();
+      },
+      onblur: (e) => {
+        e.target.value = num(pts[i]); // show what was applied (clamped, normalised)
+        fit(e.target);
+      },
+    });
+    fit(input);
+    return input;
+  };
+  const sep = () => h('span', { class: 'sep' }, ', ');
+  const values = h('div', { class: 'curve-values' }, field(0), sep(), field(1), sep(), field(2), sep(), field(3));
   return h('div', {}, svg, values);
 }
 
@@ -1727,10 +1775,16 @@ function renderInspector() {
       const v = e.target.value.trim();
       if (!v) return;
       change(() => (t.easing = v), { render: 'light' });
-      curveHost.replaceChildren(curveSvg(v));
+      curveHost.replaceChildren(curveEditor(v, fromCurve));
       easingSelect.value = EASINGS.includes(v) ? v : '';
     },
   });
+  // Edits in the curve's value fields: the text field and preset follow, the fields themselves keep focus.
+  const fromCurve = (v) => {
+    change(() => (t.easing = v), { render: 'light' });
+    easingText.value = v;
+    easingSelect.value = EASINGS.includes(v) ? v : '';
+  };
   const easingSelect = h(
     'select',
     {
@@ -1742,7 +1796,7 @@ function renderInspector() {
     h('option', { value: '' }, 'Custom …'),
     EASINGS.map((v) => h('option', { value: v, selected: v === t.easing }, v.replace(/cubic-bezier\(0.34, 1.56, 0.64, 1\)/, 'back-out').replace(/cubic-bezier\(0.65, 0, 0.35, 1\)/, 'smooth-in-out'))),
   );
-  const curveHost = h('div', {}, curveSvg(t.easing));
+  const curveHost = h('div', {}, curveEditor(t.easing, fromCurve));
 
   const iterInput = h('input', {
     value: t.iterations,
