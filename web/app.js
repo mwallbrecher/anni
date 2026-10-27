@@ -710,8 +710,8 @@ function homeWindowControls() {
  * The agent's side, as a terminal conversation in one window: the message that opened the example (the intro's
  * typed prompt lands there) and its reply, which can open the session for real, then a prompt for the next one.
  * "add a pulsating rectangle" has the agent think (the dot breathes), write a new element into the open project –
- * it appears in the demo at once, as a track to edit – and stream its reply. The next message opens the session,
- * with the edits made in the demo and what the agent added, owned by this browser.
+ * it appears in the demo at once, as a track to edit – and stream its reply. "open in full editor" opens the session
+ * in a new tab, with the edits made in the demo and what the agent added, owned by this browser.
  */
 function homeChat(demo) {
   const OPEN_PROMPT = 'open in full editor';
@@ -768,28 +768,29 @@ function homeChat(demo) {
     home.timers.push((typing = setTimeout(key, 1000))); // a beat after the terminal is there
   };
 
-  const openSession = async () => {
-    stopBoot();
-    const before = next;
-    next = null;
-    busy(true);
-    const reply = say('agent');
-    think(reply, true);
-    try {
-      const r = await api('POST', '/api/sessions', { ...EXAMPLE_SESSION, files: demo.files(), auth: true, ownerName: myName() || undefined });
-      location.href = r.token ? `${r.url}#owner=${encodeURIComponent(r.token)}` : r.url;
-    } catch (err) {
-      think(reply, false);
-      stream(reply, [err.message], () => ask(before || 'add', false));
-    }
+  // The session opens in a new tab; this page stays as it is, ready to open another. The tab is opened right away
+  // (a popup blocker would stop one opened after the request) and pointed at the session once it exists.
+  const openSession = () => {
+    const tab = open('', '_blank');
+    api('POST', '/api/sessions', { ...EXAMPLE_SESSION, files: demo.files(), auth: true, ownerName: myName() || undefined })
+      .then((r) => {
+        const url = r.token ? `${r.url}#owner=${encodeURIComponent(r.token)}` : r.url;
+        if (!tab) return (location.href = url);
+        tab.opener = null;
+        tab.location.href = url;
+      })
+      .catch((err) => {
+        tab?.close();
+        toast(err.message);
+      });
   };
   const send = (e) => {
     e.preventDefault();
     if (!next || (next === 'add' && !demo.add)) return;
     if (typing) typed();
+    if (next === 'open') return openSession(); // "open in full editor": a new tab, every time
     say('user', input.value.trim() || input.placeholder);
     input.value = input.placeholder = ''; // sent: the prompt stays empty while the agent works
-    if (next === 'open') return openSession();
     next = null;
     busy(true);
     const reply = say('agent');
@@ -809,9 +810,8 @@ function homeChat(demo) {
   };
 
   const first = say('user', PROMPT);
-  // The editor is already open, so its reply is there from the start (the link works unless the agent is busy).
-  const idle = () => next || !term.classList.contains('landed');
-  say('agent', `${EXAMPLE_SESSION.file} is open in anni – the loop below. `, h('button', { class: 'term-link', type: 'button', onclick: () => idle() && openSession() }, 'Open the full editor ↗'));
+  // The editor is already open, so its reply is there from the start; its link opens the session in a new tab.
+  say('agent', `${EXAMPLE_SESSION.file} is open in anni – the loop below. `, h('button', { class: 'term-link', type: 'button', onclick: () => openSession() }, 'Open the full editor ↗'));
   const term = h(
     'div',
     { class: 'term' },
