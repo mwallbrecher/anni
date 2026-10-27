@@ -1696,11 +1696,23 @@ function curveSvg(easing) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   svg.setAttribute('class', 'curve');
+  // The two control points get their own colours, shared with their numbers below the curve.
   svg.innerHTML = `
-    <path d="M${x(0)} ${y(0)} L${x(pts[0])} ${y(pts[1])} M${x(1)} ${y(1)} L${x(pts[2])} ${y(pts[3])}" stroke="#444" stroke-width="1"/>
-    <path d="M${x(0)} ${y(0)} C${x(pts[0])} ${y(pts[1])} ${x(pts[2])} ${y(pts[3])} ${x(1)} ${y(1)}" fill="none" stroke="#e97130" stroke-width="1.5"/>
-    <circle cx="${x(pts[0])}" cy="${y(pts[1])}" r="2.5" fill="#fafaf9"/><circle cx="${x(pts[2])}" cy="${y(pts[3])}" r="2.5" fill="#fafaf9"/>`;
-  return svg;
+    <defs><linearGradient id="curve-grad" x1="0" x2="1"><stop offset="0" stop-color="#e97130"/><stop offset="1" stop-color="#f6d3bf"/></linearGradient></defs>
+    <path d="M${x(0)} ${y(0)} L${x(pts[0])} ${y(pts[1])}" stroke="#e97130" stroke-opacity="0.45" stroke-width="1"/>
+    <path d="M${x(1)} ${y(1)} L${x(pts[2])} ${y(pts[3])}" stroke="#f6d3bf" stroke-opacity="0.45" stroke-width="1"/>
+    <path d="M${x(0)} ${y(0)} C${x(pts[0])} ${y(pts[1])} ${x(pts[2])} ${y(pts[3])} ${x(1)} ${y(1)}" fill="none" stroke="url(#curve-grad)" stroke-width="1.5"/>
+    <circle cx="${x(pts[0])}" cy="${y(pts[1])}" r="2.5" fill="#e97130"/><circle cx="${x(pts[2])}" cy="${y(pts[3])}" r="2.5" fill="#f6d3bf"/>`;
+  // The cubic-bezier() values, also for keywords (ease = 0.25, 0.1, 0.25, 1), so they can be read off and reused.
+  const num = (v) => String(+v.toFixed(2));
+  const values = h(
+    'div',
+    { class: 'curve-values', title: `cubic-bezier(${pts.map(num).join(', ')})` },
+    h('span', { class: 'p1' }, `${num(pts[0])}, ${num(pts[1])}`),
+    ', ',
+    h('span', { class: 'p2' }, `${num(pts[2])}, ${num(pts[3])}`),
+  );
+  return h('div', {}, svg, values);
 }
 
 function renderInspector() {

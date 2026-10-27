@@ -256,6 +256,9 @@ iframe { width: 100%; height: 100%; border: 0; display: block; }
 .unit::after { content: attr(data-unit); position: absolute; right: 7px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 11px; pointer-events: none; }
 .easing-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .curve { margin-top: 6px; display: block; width: 100%; height: 64px; background: var(--field); border-radius: var(--radius); }
+.curve-values { margin-top: 6px; font-family: var(--mono); font-size: 12px; color: var(--muted); user-select: text; -webkit-user-select: text; }
+.curve-values .p1 { color: var(--accent); }
+.curve-values .p2 { color: var(--peach); }
 .note { font-size: 11px; color: var(--muted); margin: 8px 0 0; }
 .note.warn { color: #f3cf86; }
 .warn-text { color: var(--warn); }
