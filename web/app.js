@@ -2861,13 +2861,38 @@ $('#t-now').addEventListener('change', (e) => {
 $('#t-dur').addEventListener('change', (e) => {
   const v = parseFloat(e.target.value);
   if (Number.isNaN(v) || !S.model) return;
-  const len = Math.max(0, Math.round(v));
+  const len = Math.max(1, Math.round(v));
   if (len === (S.sceneLen || 0)) return;
-  // An undo step like any edit, though nothing in the file changes – the length is a view setting.
-  change(() => (S.sceneLen = len));
+  const old = sceneDur();
+  let scaled = 0;
+  // One undo step. A longer length only adds room; a shorter one scales every animation that would end past it.
+  change(() => {
+    S.sceneLen = len;
+    if (len < old) scaled = scaleToLength(len, old);
+  });
   resetTimelineView();
   renderTimeline();
+  if (scaled) toast(`Scaled ${scaled} animation${scaled === 1 ? '' : 's'} to ${Math.round((len / old) * 100)} % to fit ${len} ms`);
 });
+
+/**
+ * Shorter timeline: every animation of the file that ends past `len` is scaled by len / old – delay and
+ * duration alike, keyframe percentages unchanged – so it keeps its shape and its place relative to the
+ * timeline. Animations that already end within `len` stay as they are. Returns how many were scaled.
+ */
+function scaleToLength(len, old) {
+  const k = len / old;
+  const ends = new Map();
+  for (const g of S.groups || []) if (g.anim) ends.set(g.anim, Math.max(ends.get(g.anim) ?? 0, sceneEnd(g)));
+  let n = 0;
+  for (const [a, end] of ends) {
+    if (end <= len + 0.5) continue;
+    a.timing.delay = Math.round(a.timing.delay * k);
+    a.timing.duration = Math.max(1, Math.round(a.timing.duration * k));
+    n++;
+  }
+  return n;
+}
 for (const input of [$('#t-now'), $('#t-dur')]) {
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === 'Escape') input.blur();
