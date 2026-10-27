@@ -5,6 +5,7 @@
 import { createMcpHandler } from 'agents/mcp/server';
 import { call, createServer, isSessionId, openSession, sessionStub } from './mcp.js';
 import { editorAsset, isEditorAsset, versionOf } from './assets.js';
+import { llmsTxt, robotsTxt, sitemapXml } from './seo.js';
 
 export { AnniSession } from './session.js';
 
@@ -48,6 +49,7 @@ export default {
       if (request.method === 'GET' && isEditorAsset(inner.pathname)) return editorAsset(env, request, inner.pathname);
       if (inner.pathname === '/api/version') return json({ version: versionOf(env) });
       // The agent side of a session is reached through /api/sessions/<id>/… and /mcp only, never by its URL.
+      if (inner.pathname === '/robots.txt') return new Response('User-agent: *\nDisallow: /\n', { headers: { 'Content-Type': 'text/plain; charset=utf-8' } }); // sessions are never indexed
       if (inner.pathname.startsWith('/internal/') || inner.pathname === '/export' || inner.pathname === '/proposal') return json({ error: 'Not found' }, 404);
       const headers = new Headers(request.headers);
       headers.set('x-anni-base', loc.base);
@@ -105,7 +107,9 @@ export default {
     if (url.pathname === '/api/session') return json({ session: null, hosted: true, mcpUrl: `${url.origin}/mcp`, ttlDays: 7, tokenRequired: !!env.ANNI_TOKEN });
     if (url.pathname === '/api/events') return new Response('retry: 3600000\n\n', { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' } }); // nothing to push at the root
     if (url.pathname.startsWith('/api/')) return json({ error: 'No session in this URL' }, 404);
-    if (isEditorAsset(url.pathname)) return editorAsset(env, request, url.pathname);
+    const doc = { '/robots.txt': ['text/plain', robotsTxt], '/sitemap.xml': ['application/xml', sitemapXml], '/llms.txt': ['text/markdown', llmsTxt] }[url.pathname];
+    if (doc) return new Response(doc[1](url.origin), { headers: { 'Content-Type': `${doc[0]}; charset=utf-8`, 'Cache-Control': 'public, max-age=3600' } });
+    if (isEditorAsset(url.pathname)) return editorAsset(env, request, url.pathname, url.origin);
     return env.ASSETS.fetch(request);
   },
 };

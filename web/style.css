@@ -456,6 +456,11 @@ button.primary { color: var(--offwhite); }
 .site-footer a:hover, .site-footer a:focus-visible { color: var(--accent); border-color: var(--accent); outline: none; }
 
 /* homepage: the example in an editor window, the prompt that opens it, the install line */
+.js .site-static { display: none; } /* the root's static copy, for clients without scripts (worker/seo.js) */
+.site-static { max-width: 680px; text-align: left; line-height: 1.6; }
+.site-static h2 { margin: 28px 0 8px; font-family: var(--display); font-size: 16px; font-weight: 400; color: var(--bright); }
+.site-static dt { margin-top: 10px; color: var(--bright); }
+.site-static dd { margin: 2px 0 0; }
 .empty-card.home { max-width: 680px; margin: max(16px, 8vh) 0 auto; text-align: left; } /* top-anchored: the intro grows the window downwards, the page above it stays put */
 .home h1 { font-size: 24px; text-align: center; }
 .home .lede { max-width: 500px; margin: 0 auto 16px; text-align: center; color: var(--muted); }

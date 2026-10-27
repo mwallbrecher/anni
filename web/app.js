@@ -757,7 +757,7 @@ function homeHow() {
   const edge = (via, what) => h('div', { class: 'flow-edge' }, h('span', {}, via), h('span', {}, what));
   const fact = (title, ...body) => h('div', { class: 'how-fact' }, h('h3', {}, title), h('p', {}, ...body));
   return [
-    h('section', { class: 'how home-sec late' }, h('h2', {}, 'How it works'), homeMetrics()),
+    h('section', { class: 'how home-sec late' }, h('h2', {}, 'What about it'), homeMetrics()),
     homeSaves(),
     h(
       'section',
