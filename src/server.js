@@ -255,7 +255,8 @@ async function handle(req, res) {
   }
 
   const asset = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
-  if (!/^[\w.-]+$/.test(asset)) return send(res, 404, 'Not found', 'text/plain');
+  // Subfolders (brand/, fonts/) are fine; no segment may start with a dot, which rules out `..`.
+  if (!/^(?:[\w-][\w.-]*\/)*[\w-][\w.-]*$/.test(asset)) return send(res, 404, 'Not found', 'text/plain');
   return serveFile(res, path.join(WEB_DIR, asset));
 }
 
