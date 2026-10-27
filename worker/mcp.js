@@ -5,6 +5,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { describe, kindOf, modelFromText } from '../src/css.js';
 import { WAIT_DESCRIPTION, waitSeconds } from '../src/wait.js';
+import { versionOf } from './assets.js';
 
 const text = (t) => ({ content: [{ type: 'text', text: t }] });
 const fail = (e) => ({ ...text(`Error: ${e.message}`), isError: true });
@@ -23,7 +24,14 @@ export function sessionUrl(env, origin, id) {
 }
 
 export async function call(env, id, path, body) {
-  const res = await sessionStub(env, id).fetch(new Request(`https://session.invalid${path}`, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}));
+  const headers = { 'x-anni-version': versionOf(env), ...(body ? { 'Content-Type': 'application/json' } : {}) };
+  const send = () => sessionStub(env, id).fetch(new Request(`https://session.invalid${path}`, body ? { method: 'POST', headers, body: JSON.stringify(body) } : { headers }));
+  let res;
+  try {
+    res = await send();
+  } catch {
+    res = await send(); // an outdated session object resets itself on the first call (see AnniSession.fetch)
+  }
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;

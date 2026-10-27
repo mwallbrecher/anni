@@ -336,6 +336,11 @@ body { display: grid !important; place-items: center !important; background: tra
   /* ---------- HTTP (editor + agent via stub.fetch) ---------- */
 
   async fetch(request) {
+    // After a deploy this object can keep running the old code while open tabs hold it alive. The Worker
+    // stamps each request with the current version; on a mismatch the object resets itself and the Worker
+    // retries, which starts it on the new code (its storage survives, the streams reconnect).
+    const want = request.headers.get('x-anni-version');
+    if (want && this.env.CF_VERSION_METADATA?.id && want !== versionOf(this.env)) this.ctx.abort('anni was deployed');
     await this.ready;
     const url = new URL(request.url);
     const base = request.headers.get('x-anni-base') || '';

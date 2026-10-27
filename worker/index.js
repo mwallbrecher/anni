@@ -43,9 +43,20 @@ export default {
       // The DO sees the session as its own root; `x-anni-base` lets it build URLs in path mode.
       const inner = new URL(url);
       inner.pathname = loc.base ? loc.rest : url.pathname;
+      // The editor's files and version come from this Worker, which is always the current deploy. A session
+      // object that is still running an older deploy (an open tab keeps it alive) must not hand out its editor.
+      if (request.method === 'GET' && isEditorAsset(inner.pathname)) return editorAsset(env, request, inner.pathname);
+      if (inner.pathname === '/api/version') return json({ version: versionOf(env) });
       const headers = new Headers(request.headers);
       headers.set('x-anni-base', loc.base);
-      return sessionStub(env, loc.id).fetch(new Request(inner, { method: request.method, headers, body: request.body, redirect: 'manual' }));
+      headers.set('x-anni-version', versionOf(env));
+      const body = request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.arrayBuffer();
+      const send = () => sessionStub(env, loc.id).fetch(new Request(inner, { method: request.method, headers, body, redirect: 'manual' }));
+      try {
+        return await send();
+      } catch {
+        return send(); // an outdated session object resets itself (see AnniSession.fetch); the retry reaches the new one
+      }
     }
     if (url.pathname === '/mcp') {
       return createMcpHandler((...a) => createServer(env, url.origin, ...a), {
