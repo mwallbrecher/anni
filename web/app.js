@@ -813,7 +813,7 @@ function syncPreview() {
 /* ---------- editing ---------- */
 
 function commit() {
-  S.history.push({ snap: snapshot(), sel: S.sel });
+  S.history.push({ snap: snapshot(), sel: S.sel, picks: S.picks, name: S.name });
   if (S.history.length > 200) S.history.shift();
   S.future = [];
 }
@@ -840,9 +840,12 @@ function afterChange(render = 'all') {
 
 function restore(entry, from, to) {
   if (!entry) return;
-  to.push({ snap: snapshot(), sel: S.sel });
+  to.push({ snap: snapshot(), sel: S.sel, picks: S.picks, name: S.name });
   S.model.animations = JSON.parse(entry.snap);
   S.sel = entry.sel;
+  S.picks = entry.picks;
+  // A multi-keyframe edit may have started in another animation; go back to it with its selection.
+  if (entry.name && entry.name !== S.name && animBy(entry.name)) S.name = entry.name;
   if (!anim()) S.name = S.model.animations[0].name; // undo of a freshly created animation
   if (S.sel && anim().keyframes[S.sel.bi]?.offsets[S.sel.oi] === undefined) S.sel = null;
   afterChange();
@@ -908,9 +911,44 @@ function valueNear(a, prop, p) {
   return (before || pts[0])?.v ?? '';
 }
 
+/*
+ * Multi-selection: S.picks lists every selected keyframe as { name, bi, oi } (they can belong to different
+ * animations). S.sel stays the primary one – the keyframe the inspector edits, always of the current animation.
+ * Code that sets S.sel alone (keying, save, undo) simply falls back to a single selection.
+ */
+const pickKey = (p) => `${p.name}|${p.bi}|${p.oi}`;
+const parsePick = (key) => {
+  const [name, bi, oi] = key.split('|');
+  return { name, bi: +bi, oi: +oi };
+};
+const animBy = (name) => S.model.animations.find((a) => a.name === name);
+
+function picks() {
+  if (!S.sel) return [];
+  const primary = { name: S.name, bi: S.sel.bi, oi: S.sel.oi };
+  const list = (S.picks || []).filter((p) => animBy(p.name)?.keyframes[p.bi]?.offsets[p.oi] !== undefined);
+  return list.some((p) => pickKey(p) === pickKey(primary)) ? list : [primary];
+}
+
+/** Selects several keyframes. The primary is the first one of the current animation, else the first one. */
+function setPicks(list) {
+  const seen = new Set();
+  list = list.filter((p) => !seen.has(pickKey(p)) && seen.add(pickKey(p)));
+  if (!list.length) return select(null);
+  const primary = list.find((p) => p.name === S.name) || list[0];
+  if (primary.name !== S.name) {
+    S.name = primary.name;
+    api('POST', '/api/select', { animation: S.name });
+  }
+  S.sel = { bi: primary.bi, oi: primary.oi };
+  S.picks = list;
+  renderAll();
+}
+
 /** Selects a keyframe; seeks the playhead to it (page time of the edited animation, or `at` ms). */
 function select(bi, oi, { seek = true, at } = {}) {
   S.sel = bi === null ? null : { bi, oi };
+  S.picks = S.sel ? [{ name: S.name, bi, oi }] : [];
   if (S.sel && seek) S.t = at ?? delayOf() + (anim().keyframes[bi].offsets[oi] / 100) * dur();
   renderTimeline();
   renderInspector();
@@ -1083,15 +1121,21 @@ function applyAnimation(name, selector) {
 }
 
 function deleteSelected() {
-  if (!S.sel) return;
-  const a = anim();
-  const { bi, oi } = S.sel;
+  const list = picks();
+  if (!list.length) return;
+  // Highest index first, so removing a keyframe never shifts one that is still to be removed.
+  const order = [...list].sort((p, q) => q.bi - p.bi || q.oi - p.oi);
   change(() => {
-    const block = a.keyframes[bi];
-    if (block.offsets.length > 1) block.offsets.splice(oi, 1);
-    else a.keyframes.splice(bi, 1);
+    for (const p of order) {
+      const a = animBy(p.name);
+      const block = a.keyframes[p.bi];
+      if (block.offsets.length > 1) block.offsets.splice(p.oi, 1);
+      else a.keyframes.splice(p.bi, 1);
+    }
     S.sel = null; // before the re-render, which would otherwise look up the removed block
+    S.picks = [];
   });
+  if (list.length > 1) toast(`Deleted ${list.length} keyframes`);
 }
 
 /* ---------- copy / paste keyframes ---------- */
@@ -1119,45 +1163,80 @@ function parseDecls(text) {
   return decls.length ? decls : null;
 }
 
+/**
+ * Copies the selected keyframes. S.clip.items holds each one's declarations and its time relative to the
+ * earliest (page time, so keyframes of several animations keep their spacing); S.clip.css is the clipboard text.
+ */
 function copySelected({ cut = false } = {}) {
-  if (!S.sel) return null;
-  const block = anim().keyframes[S.sel.bi];
-  const offset = block.offsets[S.sel.oi];
-  S.clip = { decls: block.decls.filter((d) => d.prop).map((d) => ({ ...d })), from: `${S.name} ${fmtPct(offset)}` };
-  S.clip.css = keyframeCss(block, offset);
+  const list = picks();
+  if (!list.length) return null;
+  const items = list
+    .map((p) => {
+      const a = animBy(p.name);
+      const block = a.keyframes[p.bi];
+      const offset = block.offsets[p.oi];
+      return { block, offset, label: `${p.name} ${fmtPct(offset)}`, t: a.timing.delay + (offset / 100) * a.timing.duration };
+    })
+    .sort((x, y) => x.t - y.t);
+  const t0 = items[0].t;
+  const decls = (it) => it.block.decls.filter((d) => d.prop).map((d) => ({ ...d }));
+  S.clip = {
+    items: items.map((it) => ({ rel: it.t - t0, decls: decls(it) })),
+    from: items.length === 1 ? items[0].label : `${items.length} keyframes`,
+    css: items.map((it) => keyframeCss(it.block, it.offset)).join('\n\n'),
+  };
   if (cut) deleteSelected();
   else renderInspector();
-  toast(`${cut ? 'Cut' : 'Copied'} keyframe ${S.clip.from} · ${S.clip.decls.length} value${S.clip.decls.length === 1 ? '' : 's'}`);
+  const n = S.clip.items[0].decls.length;
+  toast(`${cut ? 'Cut' : 'Copied'} ${items.length === 1 ? `keyframe ${S.clip.from} · ${n} value${n === 1 ? '' : 's'}` : S.clip.from}`);
   return S.clip.css;
 }
 
 /**
- * Pastes declarations at the playhead: into the keyframe there (values overwrite, others stay), or as a new
- * keyframe. A keyframe shared with other offsets (`0%, 100% {}`) is split first so only this one changes.
+ * Pastes keyframes at the playhead – the first at the playhead, the others at their copied distance from it.
+ * Each goes into the keyframe already there (values overwrite, others stay) or becomes a new one. A keyframe
+ * shared with other offsets (`0%, 100% {}`) is split first so only this one changes. `items` defaults to the clipboard.
  */
-function pasteAtPlayhead(decls = S.clip?.decls) {
-  if (!decls?.length) return toast('Nothing to paste – select a keyframe and copy it first');
+function pasteAtPlayhead(items = S.clip?.items) {
+  if (!items?.length) return toast('Nothing to paste – select a keyframe and copy it first');
   const a = anim();
-  const p = playheadPct();
-  let at = blockAtPlayhead();
+  const p0 = playheadPct();
+  const pasted = [];
+  let skipped = 0;
   change(() => {
-    if (at && at.block.offsets.length > 1) {
-      at.block.offsets.splice(at.oi, 1);
-      a.keyframes.push({ offsets: [p], decls: at.block.decls.map((d) => ({ ...d })) });
-      at = { bi: a.keyframes.length - 1, oi: 0, block: a.keyframes[a.keyframes.length - 1] };
-    }
-    if (!at) {
-      a.keyframes.push({ offsets: [p], decls: [] });
-      at = { bi: a.keyframes.length - 1, oi: 0, block: a.keyframes[a.keyframes.length - 1] };
-    }
-    for (const d of decls) {
-      const cur = at.block.decls.find((x) => x.prop === d.prop);
-      if (cur) Object.assign(cur, { value: d.value, important: d.important });
-      else at.block.decls.push({ ...d });
+    for (const item of items) {
+      const p = Math.round((p0 + (item.rel / dur()) * 100) * 10) / 10;
+      if (p > 100.05) {
+        skipped++;
+        continue;
+      }
+      let bi = a.keyframes.findIndex((b) => b.offsets.some((o) => Math.abs(o - p) < 0.05));
+      let block = a.keyframes[bi];
+      if (block && block.offsets.length > 1) {
+        block.offsets.splice(block.offsets.findIndex((o) => Math.abs(o - p) < 0.05), 1);
+        block = { offsets: [p], decls: block.decls.map((d) => ({ ...d })) };
+        a.keyframes.push(block);
+        bi = a.keyframes.length - 1;
+      }
+      if (!block) {
+        block = { offsets: [p], decls: [] };
+        a.keyframes.push(block);
+        bi = a.keyframes.length - 1;
+      }
+      for (const d of item.decls) {
+        const cur = block.decls.find((x) => x.prop === d.prop);
+        if (cur) Object.assign(cur, { value: d.value, important: d.important });
+        else block.decls.push({ ...d });
+      }
+      pasted.push({ name: a.name, bi, oi: block.offsets.findIndex((o) => Math.abs(o - p) < 0.05) });
     }
   });
-  select(at.bi, at.oi, { seek: false });
-  toast(`Pasted ${decls.length} value${decls.length === 1 ? '' : 's'} at ${fmtPct(p)}${playheadInRange() ? '' : ' (playhead was outside this animation)'}`);
+  if (!pasted.length) return toast('Nothing pasted – the playhead is past the end of this animation');
+  if (pasted.length === 1) select(pasted[0].bi, pasted[0].oi, { seek: false });
+  else setPicks(pasted);
+  const what = items.length === 1 ? `${items[0].decls.length} value${items[0].decls.length === 1 ? '' : 's'}` : `${pasted.length} keyframes`;
+  const notes = [skipped && `${skipped} past 100% left out`, !playheadInRange() && 'playhead was outside this animation'].filter(Boolean);
+  toast(`Pasted ${what} at ${fmtPct(p0)}${notes.length ? ` (${notes.join(', ')})` : ''}`);
 }
 
 /** Native clipboard events, so ⌘C / ⌘X / ⌘V work and the CSS text also goes to other apps. */
@@ -1179,10 +1258,11 @@ document.addEventListener('paste', (e) => {
   if (!keyframeClipboardActive(e)) return;
   const text = e.clipboardData.getData('text/plain');
   // Our own copy pastes exactly; anything else is parsed as CSS (a keyframe block or declarations).
-  const decls = S.clip && text === S.clip.css ? S.clip.decls : parseDecls(text) || (!text ? S.clip?.decls : null);
-  if (!decls) return;
+  const parsed = S.clip && text === S.clip.css ? null : parseDecls(text);
+  const items = S.clip && text === S.clip.css ? S.clip.items : parsed ? [{ rel: 0, decls: parsed }] : !text ? S.clip?.items : null;
+  if (!items) return;
   e.preventDefault();
-  pasteAtPlayhead(decls);
+  pasteAtPlayhead(items);
 });
 
 /* ---------- duration edits ---------- */
@@ -1253,7 +1333,8 @@ function splitSelected() {
 async function saveNow() {
   if (!S.session) return;
   if (S.schema) return saveSchema();
-  const selOffset = S.sel ? anim().keyframes[S.sel.bi].offsets[S.sel.oi] : null;
+  // The saved file is re-read, so keyframe indices may change: remember the selection by offset.
+  const kept = picks().map((p) => ({ name: p.name, o: animBy(p.name).keyframes[p.bi].offsets[p.oi], primary: p.name === S.name && p.bi === S.sel.bi && p.oi === S.sel.oi }));
   try {
     const edits = await pendingEdits();
     const r = await api('POST', '/api/save', { model: S.model, edits });
@@ -1275,9 +1356,14 @@ async function saveNow() {
       return;
     }
     S.sel = null;
-    if (selOffset !== null) {
-      const bi = anim().keyframes.findIndex((b) => b.offsets.includes(selOffset));
-      if (bi >= 0) S.sel = { bi, oi: anim().keyframes[bi].offsets.indexOf(selOffset) };
+    S.picks = [];
+    for (const k of kept) {
+      const a = animBy(k.name);
+      const bi = a ? a.keyframes.findIndex((b) => b.offsets.includes(k.o)) : -1;
+      if (bi < 0) continue;
+      const p = { name: k.name, bi, oi: a.keyframes[bi].offsets.indexOf(k.o) };
+      S.picks.push(p);
+      if (k.primary) S.sel = { bi: p.bi, oi: p.oi };
     }
     renderAll();
     await pushNow();
@@ -1796,8 +1882,26 @@ function renderKeyframeSection(a) {
       'div',
       { class: 'section', id: 'kf-section' },
       h('h2', {}, 'Keyframe'),
-      h('p', { class: 'empty-inspector' }, 'Changing a value above keys it at the playhead. Keyframes in the timeline: click = select, drag = move (⌥ = duplicate), double-click a track = new keyframe, ⌘C / ⌘V = copy and paste at the playhead.'),
+      h('p', { class: 'empty-inspector' }, 'Changing a value above keys it at the playhead. Keyframes in the timeline: click = select, drag on an empty track = select several (Shift adds), drag = move (⌥ = duplicate), double-click a track = new keyframe, ⌘C / ⌘V = copy and paste at the playhead. Scrub in the ruler.'),
       S.clip ? h('div', { class: 'row', style: 'margin-top:10px' }, h('span', { class: 'muted note', style: 'margin:0' }, `Clipboard: ${S.clip.from}`), h('span', { class: 'spacer' }), h('button', { onclick: () => pasteAtPlayhead() }, 'Paste at playhead')) : null,
+    );
+  }
+  const list = picks();
+  if (list.length > 1) {
+    const names = [...new Set(list.map((p) => p.name))];
+    return h(
+      'div',
+      { class: 'section', id: 'kf-section' },
+      h('h2', {}, `${list.length} keyframes`, h('span', { class: 'spacer' }), h('button', { class: 'ghost', title: 'Clear selection (Esc)', onclick: () => select(null) }, '×')),
+      h('p', { class: 'note', style: 'margin:0 0 10px' }, 'In ', ...names.flatMap((n, i) => [i ? ', ' : '', h('code', {}, n)]), '. Drag one of them to move all by the same time; click one to edit just that one.'),
+      h(
+        'div',
+        { class: 'row' },
+        h('button', { title: 'Copy the selected keyframes with their values (⌘C)', onclick: () => navigator.clipboard?.writeText(copySelected()).catch(() => {}) }, 'Copy'),
+        h('button', { title: S.clip ? `Paste ${S.clip.from} at the playhead (⌘V)` : 'Copy a keyframe first', disabled: !S.clip, onclick: () => pasteAtPlayhead() }, 'Paste'),
+        h('span', { class: 'spacer' }),
+        h('button', { class: 'danger', onclick: deleteSelected }, `Delete ${list.length} keyframes`),
+      ),
     );
   }
   const { bi, oi } = S.sel;
@@ -2149,7 +2253,7 @@ function laneX(e, rect, fine) {
  * text selection or focus change, and the pointer is captured by #tracks (which survives re-renders)
  * so the drag keeps going when it passes over the preview iframe.
  */
-function followPointer(e, onMove) {
+function followPointer(e, onMove, onEnd) {
   e.preventDefault();
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   getSelection()?.removeAllRanges();
@@ -2161,6 +2265,7 @@ function followPointer(e, onMove) {
     removeEventListener('pointermove', move);
     removeEventListener('pointerup', end);
     removeEventListener('pointercancel', end);
+    onEnd?.();
   };
   addEventListener('pointermove', move);
   addEventListener('pointerup', end);
@@ -2180,37 +2285,121 @@ function startScrub(e, lane) {
   followPointer(e, move);
 }
 
+/**
+ * Press on a keyframe. Shift/⌘ toggles it in the selection. On a keyframe of a multi-selection, dragging moves
+ * all selected keyframes by the same time (a click without moving selects just that one); otherwise it
+ * selects and moves this one. ⌥ leaves copies behind, like in a design tool.
+ */
 function startDrag(e, g, bi, oi) {
   if (e.button !== 0) return;
   e.stopPropagation();
   e.preventDefault();
   const rect = e.currentTarget.parentElement.getBoundingClientRect();
-  if (g.name !== S.name) setAnimation(g.name);
-  select(bi, oi, { at: g.delay + (anim().keyframes[bi].offsets[oi] / 100) * g.duration });
-  const x0 = e.clientX;
-  const duplicate = e.altKey; // ⌥-drag leaves a copy behind, like in a design tool
-  let moved = false;
-  followPointer(e, (ev) => {
-    if (!moved && Math.abs(ev.clientX - x0) < 3) return;
-    if (!moved) {
-      moved = true;
-      commit();
-      if (duplicate) {
-        // The original stays where it is; a single-offset copy of it is what moves.
-        const src = anim().keyframes[bi];
-        anim().keyframes.push({ offsets: [src.offsets[oi]], decls: src.decls.map((d) => ({ ...d })) });
-        bi = anim().keyframes.length - 1;
-        oi = 0;
-        S.sel = { bi, oi };
-      }
+  const key = pickKey({ name: g.name, bi, oi });
+  const before = picks();
+  if (e.shiftKey || e.metaKey || e.ctrlKey) {
+    const has = before.some((p) => pickKey(p) === key);
+    return setPicks(has ? before.filter((p) => pickKey(p) !== key) : [...before, { name: g.name, bi, oi }]);
+  }
+  const at = (a) => g.delay + (a.keyframes[bi].offsets[oi] / 100) * g.duration;
+  const multi = before.length > 1 && before.some((p) => pickKey(p) === key);
+  if (multi) {
+    // Make the pressed keyframe the primary one without dropping the others.
+    if (g.name !== S.name) {
+      S.name = g.name;
+      api('POST', '/api/select', { animation: g.name });
     }
-    const block = anim().keyframes[bi];
-    const o = toOffset(g, laneX(ev, rect, true), ev.shiftKey);
-    if (block.offsets[oi] === o) return;
-    block.offsets[oi] = o;
-    S.t = g.delay + (o / 100) * g.duration;
-    afterChange();
+    S.sel = { bi, oi };
+    S.t = at(anim());
+    renderAll();
+  } else {
+    if (g.name !== S.name) setAnimation(g.name);
+    select(bi, oi, { at: at(anim()) });
+  }
+  const items = picks().map((p) => {
+    const a = animBy(p.name);
+    return { p, a, start: a.keyframes[p.bi].offsets[p.oi], dur: Math.max(1, a.timing.duration), anchor: pickKey(p) === key };
   });
+  const anchor = items.find((it) => it.anchor);
+  // Every keyframe has to stay within 0–100 % of its own animation, so the shared shift is limited by all of them.
+  const lo = Math.max(...items.map((it) => (-it.start / 100) * it.dur));
+  const hi = Math.min(...items.map((it) => ((100 - it.start) / 100) * it.dur));
+  const x0 = e.clientX;
+  const duplicate = e.altKey;
+  let moved = false;
+  followPointer(
+    e,
+    (ev) => {
+      if (!moved && Math.abs(ev.clientX - x0) < 3) return;
+      if (!moved) {
+        moved = true;
+        commit();
+        if (duplicate) {
+          // The originals stay where they are; single-offset copies of them are what moves.
+          for (const it of items) {
+            const src = it.a.keyframes[it.p.bi];
+            it.a.keyframes.push({ offsets: [it.start], decls: src.decls.map((d) => ({ ...d })) });
+            it.p = { name: it.p.name, bi: it.a.keyframes.length - 1, oi: 0 };
+          }
+          S.picks = items.map((it) => it.p);
+          S.sel = { bi: anchor.p.bi, oi: anchor.p.oi };
+        }
+      }
+      const o = toOffset(g, laneX(ev, rect, true), ev.shiftKey);
+      const raw = ((o - anchor.start) / 100) * anchor.dur;
+      const dt = clamp(raw, lo, hi);
+      let changed = false;
+      for (const it of items) {
+        const next = it.anchor && dt === raw ? o : Math.round((it.start + (dt / it.dur) * 100) * 10) / 10;
+        const offsets = it.a.keyframes[it.p.bi].offsets;
+        if (offsets[it.p.oi] !== next) changed = true;
+        offsets[it.p.oi] = next;
+      }
+      if (!changed) return;
+      S.t = g.delay + (anim().keyframes[anchor.p.bi].offsets[anchor.p.oi] / 100) * g.duration;
+      afterChange();
+    },
+    () => {
+      if (multi && !moved) select(bi, oi, { seek: false }); // a plain click in a selection narrows it to this keyframe
+    },
+  );
+}
+
+/** Drag on an empty track: rubber-band selection. Shift/⌘ adds to the selection, a click without dragging clears it. */
+function startMarquee(e) {
+  if (e.button !== 0) return;
+  const x0 = e.clientX;
+  const y0 = e.clientY;
+  const base = e.shiftKey || e.metaKey || e.ctrlKey ? picks() : [];
+  let box = null;
+  let keys = new Set(base.map(pickKey));
+  followPointer(
+    e,
+    (ev) => {
+      if (!box && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 3) return;
+      if (!box) box = document.body.appendChild(h('div', { class: 'marquee' }));
+      const l = Math.min(x0, ev.clientX);
+      const t = Math.min(y0, ev.clientY);
+      const r = Math.max(x0, ev.clientX);
+      const b = Math.max(y0, ev.clientY);
+      box.style.cssText = `left:${l}px;top:${t}px;width:${r - l}px;height:${b - t}px`;
+      keys = new Set(base.map(pickKey));
+      const buttons = $('#tracks').querySelectorAll('.kf[data-pick]');
+      for (const btn of buttons) {
+        const c = btn.getBoundingClientRect();
+        const cx = c.left + c.width / 2;
+        const cy = c.top + c.height / 2;
+        if (cx >= l && cx <= r && cy >= t && cy <= b) keys.add(btn.dataset.pick);
+      }
+      // Live feedback without a re-render; the same keyframe can show in several rows.
+      for (const btn of buttons) btn.classList.toggle('sel', keys.has(btn.dataset.pick));
+    },
+    () => {
+      if (!box) return base.length ? null : picks().length && select(null, null, { seek: false });
+      box.remove();
+      setPicks([...keys].map(parsePick));
+    },
+  );
 }
 
 /** Diamonds of one group's animation on the scene lane; `prop` limits them to keyframes setting that property. */
@@ -2222,16 +2411,16 @@ function keyframeButtons(g, prop) {
     b.offsets.forEach((o, oi) => pts.push({ o, bi, oi, v: decl?.value }));
   });
   pts.sort((x, y) => x.o - y.o);
-  const current = g.name === S.name;
   const nodes = [];
   if (prop) {
     for (let i = 0; i < pts.length - 1; i++) nodes.push(h('div', { class: 'bar', style: `left:${sceneX(g, pts[i].o)}%;width:${sceneX(g, pts[i + 1].o) - sceneX(g, pts[i].o)}%` }));
   }
   for (const pt of pts) {
-    const isSel = current && S.sel && S.sel.bi === pt.bi && S.sel.oi === pt.oi;
+    const key = pickKey({ name: g.name, bi: pt.bi, oi: pt.oi });
     nodes.push(
       h('button', {
-        class: `kf${isSel ? ' sel' : ''}`,
+        class: `kf${pickSet.has(key) ? ' sel' : ''}`,
+        'data-pick': key,
         style: `left:${sceneX(g, pt.o)}%`,
         title: `${fmtPct(pt.o)} · ${fmtMs(g.delay + (pt.o / 100) * g.duration)}${prop ? ` · ${prop}: ${pt.v}` : ''}`,
         onpointerdown: (e) => startDrag(e, g, pt.bi, pt.oi),
@@ -2247,7 +2436,7 @@ function laneFor(g, prop, children) {
     'div',
     {
       class: 'tl-track',
-      onpointerdown: (e) => startScrub(e, lane),
+      onpointerdown: startMarquee, // scrubbing is the ruler's job
       ondblclick: (e) => {
         if (!g.anim || e.target.classList.contains('kf')) return;
         if (g.name !== S.name) setAnimation(g.name);
@@ -2308,7 +2497,10 @@ function niceStep(total) {
   return [10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000, 30000].find((s) => s >= target) || 60000;
 }
 
+let pickSet = new Set(); // keys of the selected keyframes, refreshed per render
+
 function renderTimeline() {
+  pickSet = new Set(picks().map(pickKey));
   const groups = sceneGroups();
   S.groups = groups;
   S.groupsKey = groupsKey(groups);
@@ -2469,6 +2661,11 @@ addEventListener('keydown', (e) => {
   // internal clipboard when the browser sends none.
   if (mod && !editing && !String(getSelection?.() || '')) {
     const k = e.key.toLowerCase();
+    if (k === 'a') {
+      // ⌘A: every keyframe of the edited animation.
+      e.preventDefault();
+      return setPicks(anim().keyframes.flatMap((b, bi) => b.offsets.map((_, oi) => ({ name: S.name, bi, oi }))));
+    }
     if ((k === 'c' || k === 'x') && S.sel) {
       e.preventDefault();
       const css = copySelected({ cut: k === 'x' });
