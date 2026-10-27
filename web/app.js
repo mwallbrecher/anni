@@ -123,7 +123,10 @@ async function load({ keepTime = false } = {}) {
   S.picking = false;
   S.history = [];
   S.future = [];
-  if (!keepTime) S.t = 0;
+  if (!keepTime) {
+    S.t = 0;
+    S.sceneLen = 0;
+  }
   S.mode = S.session.previewUrl ? 'page' : 'demo';
   $('#file').textContent = S.session.file;
   $('#file').title = S.session.file;
@@ -1885,7 +1888,7 @@ function renderKeyframeSection(a) {
       'div',
       { class: 'section', id: 'kf-section' },
       h('h2', {}, 'Keyframe'),
-      h('p', { class: 'empty-inspector' }, 'Changing a value above keys it at the playhead. Keyframes in the timeline: click = select, drag on an empty track = select several (Shift adds), drag = move (⌥ = duplicate), double-click a track = new keyframe, ⌘C / ⌘V = copy and paste at the playhead. Scrub in the ruler.'),
+      h('p', { class: 'empty-inspector' }, 'Changing a value above keys it at the playhead. Keyframes in the timeline: click = select, drag on an empty track = select several (Shift adds), drag = move (the first or last keyframe stretches the animation, Shift keeps the other keyframes’ times, ⌥ = duplicate, ⌘ = 1 ms steps), double-click a track = new keyframe, ⌘C / ⌘V = copy and paste at the playhead. Scrub in the ruler.'),
       S.clip ? h('div', { class: 'row', style: 'margin-top:10px' }, h('span', { class: 'muted note', style: 'margin:0' }, `Clipboard: ${S.clip.from}`), h('span', { class: 'spacer' }), h('button', { onclick: () => pasteAtPlayhead() }, 'Paste at playhead')) : null,
     );
   }
@@ -2173,8 +2176,9 @@ const sceneEnd = (g) => g.delay + g.duration * (Number.isFinite(g.iterations) &&
 
 /* The timeline shows a window [viewStart, viewStart + viewSpan] of the scene; span null = whole scene. */
 const MIN_SPAN = 4 * FRAME;
-const viewSpan = () => Math.min(S.view.span ?? sceneDur(), sceneDur());
-const viewStart = () => (S.view.span == null ? 0 : clamp(S.view.start, 0, sceneDur() - viewSpan()));
+// While a keyframe is dragged (S.dragView) the window stays where the drag started.
+const viewSpan = () => (S.dragView ? S.dragView.span : Math.min(S.view.span ?? sceneDur(), sceneDur()));
+const viewStart = () => (S.dragView ? S.dragView.start : S.view.span == null ? 0 : clamp(S.view.start, 0, sceneDur() - viewSpan()));
 const zoomFactor = () => sceneDur() / viewSpan();
 /** Page time -> lane position (%) and back. */
 const timeX = (t) => ((t - viewStart()) / viewSpan()) * 100;
@@ -2264,7 +2268,12 @@ function saveLayout() {
   } catch {}
 }
 
-function resizer(el, key, axis, measure) {
+/**
+ * A drag handle. The size follows the pointer's travel from where the handle was grabbed (no jump on press),
+ * updates once per frame, and the preview iframe keeps its size until release – re-laying out the page on
+ * every frame is what made resizing lag.
+ */
+function resizer(el, key, axis, size, sign) {
   el.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
     e.preventDefault();
@@ -2272,17 +2281,32 @@ function resizer(el, key, axis, measure) {
       el.setPointerCapture(e.pointerId);
     } catch {}
     el.classList.add('active');
-    document.body.classList.add('resizing', axis);
+    // Own class names: a plain `row` on <body> would pick up the panel's `.row` flex layout.
+    document.body.classList.add(`resizing-${axis}`);
+    const start = size();
+    const from = axis === 'col' ? e.clientX : e.clientY;
+    const iframe = frame.getBoundingClientRect();
+    frame.style.cssText = `position:absolute;left:0;top:0;width:${iframe.width}px;height:${iframe.height}px`;
+    let pending = null;
+    let raf = 0;
     const move = (ev) => {
-      layout[key] = Math.round(measure(ev));
-      applyLayout();
+      pending = start + sign * ((axis === 'col' ? ev.clientX : ev.clientY) - from);
+      raf ||= requestAnimationFrame(() => {
+        raf = 0;
+        layout[key] = Math.round(clamp(pending, ...LIMITS[key]()));
+        applyLayout();
+      });
     };
     const up = () => {
       el.removeEventListener('pointermove', move);
       el.removeEventListener('pointerup', up);
       el.removeEventListener('pointercancel', up);
+      cancelAnimationFrame(raf);
+      if (pending !== null) layout[key] = Math.round(clamp(pending, ...LIMITS[key]()));
+      applyLayout();
+      frame.style.cssText = ''; // the preview takes its new size once
       el.classList.remove('active');
-      document.body.classList.remove('resizing', axis);
+      document.body.classList.remove(`resizing-${axis}`);
       saveLayout();
     };
     el.addEventListener('pointermove', move);
@@ -2296,8 +2320,9 @@ function resizer(el, key, axis, measure) {
   });
 }
 
-resizer($('#panel-resizer'), 'panel', 'col', (e) => clamp(innerWidth - e.clientX, ...LIMITS.panel()));
-resizer($('#tl-resizer'), 'timeline', 'row', (e) => clamp(innerHeight - e.clientY, ...LIMITS.timeline()));
+// Dragging left widens the panel, dragging up raises the timeline.
+resizer($('#panel-resizer'), 'panel', 'col', () => $('#inspector').getBoundingClientRect().width, -1);
+resizer($('#tl-resizer'), 'timeline', 'row', () => $('#timeline').getBoundingClientRect().height, -1);
 addEventListener('resize', applyLayout);
 applyLayout();
 $('#tl-zoom').onclick = resetTimelineView;
@@ -2361,9 +2386,10 @@ function startScrub(e, lane) {
 }
 
 /**
- * Press on a keyframe. Shift/⌘ toggles it in the selection. On a keyframe of a multi-selection, dragging moves
- * all selected keyframes by the same time (a click without moving selects just that one); otherwise it
- * selects and moves this one. ⌥ leaves copies behind, like in a design tool.
+ * Press on a keyframe. ⌘/Ctrl+click toggles it in the selection, and so does a Shift+click without moving.
+ * Dragging moves this keyframe – or, on a keyframe of a multi-selection, all selected ones by the same time
+ * (a plain click there selects just that one). Dragging the first or last keyframe stretches the animation;
+ * with Shift held the other keyframes keep their times instead (see applyMove). ⌥ leaves copies behind.
  */
 function startDrag(e, g, bi, oi) {
   if (e.button !== 0) return;
@@ -2372,72 +2398,150 @@ function startDrag(e, g, bi, oi) {
   const rect = e.currentTarget.parentElement.getBoundingClientRect();
   const key = pickKey({ name: g.name, bi, oi });
   const before = picks();
-  if (e.shiftKey || e.metaKey || e.ctrlKey) {
+  const toggle = () => {
     const has = before.some((p) => pickKey(p) === key);
-    return setPicks(has ? before.filter((p) => pickKey(p) !== key) : [...before, { name: g.name, bi, oi }]);
-  }
+    setPicks(has ? before.filter((p) => pickKey(p) !== key) : [...before, { name: g.name, bi, oi }]);
+  };
+  if (e.metaKey || e.ctrlKey) return toggle();
+  const shiftPress = e.shiftKey; // click: toggle on release; drag: move keeping the other keyframes' times
   const at = (a) => g.delay + (a.keyframes[bi].offsets[oi] / 100) * g.duration;
   const multi = before.length > 1 && before.some((p) => pickKey(p) === key);
-  if (multi) {
-    // Make the pressed keyframe the primary one without dropping the others.
-    if (g.name !== S.name) {
-      S.name = g.name;
-      api('POST', '/api/select', { animation: g.name });
+  const grab = () => {
+    if (multi) {
+      // Make the pressed keyframe the primary one without dropping the others.
+      if (g.name !== S.name) {
+        S.name = g.name;
+        api('POST', '/api/select', { animation: g.name });
+      }
+      S.sel = { bi, oi };
+      S.t = at(anim());
+      renderAll();
+    } else {
+      if (g.name !== S.name) setAnimation(g.name);
+      select(bi, oi, { at: at(anim()) });
     }
-    S.sel = { bi, oi };
-    S.t = at(anim());
-    renderAll();
-  } else {
-    if (g.name !== S.name) setAnimation(g.name);
-    select(bi, oi, { at: at(anim()) });
-  }
-  const items = picks().map((p) => {
-    const a = animBy(p.name);
-    return { p, a, start: a.keyframes[p.bi].offsets[p.oi], dur: Math.max(1, a.timing.duration), anchor: pickKey(p) === key };
-  });
-  const anchor = items.find((it) => it.anchor);
-  // Every keyframe has to stay within 0–100 % of its own animation, so the shared shift is limited by all of them.
-  const lo = Math.max(...items.map((it) => (-it.start / 100) * it.dur));
-  const hi = Math.min(...items.map((it) => ((100 - it.start) / 100) * it.dur));
+  };
+  if (!shiftPress) grab();
+  // The scale is frozen while dragging: rows don't rescale under the pointer, and a keyframe can be pulled past
+  // the end of the timeline (the scene grows to fit on release).
+  S.dragView = { start: viewStart(), span: viewSpan() };
+  const pageTime = (ev) => S.dragView.start + ((ev.clientX - rect.left) / rect.width) * S.dragView.span;
+  const t0 = pageTime(e);
   const x0 = e.clientX;
   const duplicate = e.altKey;
   let moved = false;
+  let plan = null;
   followPointer(
     e,
     (ev) => {
       if (!moved && Math.abs(ev.clientX - x0) < 3) return;
       if (!moved) {
         moved = true;
+        if (shiftPress) grab();
         commit();
         if (duplicate) {
           // The originals stay where they are; single-offset copies of them are what moves.
-          for (const it of items) {
-            const src = it.a.keyframes[it.p.bi];
-            it.a.keyframes.push({ offsets: [it.start], decls: src.decls.map((d) => ({ ...d })) });
-            it.p = { name: it.p.name, bi: it.a.keyframes.length - 1, oi: 0 };
-          }
-          S.picks = items.map((it) => it.p);
-          S.sel = { bi: anchor.p.bi, oi: anchor.p.oi };
+          const copies = picks().map((p) => {
+            const a = animBy(p.name);
+            const src = a.keyframes[p.bi];
+            a.keyframes.push({ offsets: [src.offsets[p.oi]], decls: src.decls.map((d) => ({ ...d })) });
+            return { name: p.name, bi: a.keyframes.length - 1, oi: 0, anchor: p.name === g.name && p.bi === bi && p.oi === oi };
+          });
+          const a = copies.find((c) => c.anchor);
+          S.picks = copies.map(({ name, bi: b, oi: o }) => ({ name, bi: b, oi: o }));
+          S.sel = { bi: a.bi, oi: a.oi };
+          bi = a.bi;
+          oi = a.oi;
         }
+        plan = planMove(picks(), g, { name: g.name, bi, oi });
       }
-      const o = toOffset(g, laneX(ev, rect, true), ev.shiftKey);
-      const raw = ((o - anchor.start) / 100) * anchor.dur;
-      const dt = clamp(raw, lo, hi);
-      let changed = false;
-      for (const it of items) {
-        const next = it.anchor && dt === raw ? o : Math.round((it.start + (dt / it.dur) * 100) * 10) / 10;
-        const offsets = it.a.keyframes[it.p.bi].offsets;
-        if (offsets[it.p.oi] !== next) changed = true;
-        offsets[it.p.oi] = next;
-      }
-      if (!changed) return;
-      S.t = g.delay + (anim().keyframes[anchor.p.bi].offsets[anchor.p.oi] / 100) * g.duration;
+      // Snap the pressed keyframe to 10 ms (⌘/Ctrl held: 1 ms); nothing may move before the page starts.
+      // Shift can be pressed or released mid-drag: the move is always recomputed from the start.
+      const step = ev.metaKey || ev.ctrlKey ? 1 : 10;
+      const dt = Math.max(Math.round((plan.anchorT + pageTime(ev) - t0) / step) * step - plan.anchorT, -plan.earliest);
+      if (dt === plan.dt && ev.shiftKey === plan.keepTimes) return;
+      plan.dt = dt;
+      plan.keepTimes = ev.shiftKey;
+      applyMove(plan, dt, ev.shiftKey);
+      S.t = plan.anchorT + dt;
       afterChange();
     },
     () => {
-      if (multi && !moved) select(bi, oi, { seek: false }); // a plain click in a selection narrows it to this keyframe
+      S.dragView = null;
+      if (moved) renderTimeline(); // back to the normal scale, now fitting the new scene length
+      else if (shiftPress) toggle();
+      else if (multi) select(bi, oi, { seek: false }); // a plain click in a selection narrows it to this keyframe
     },
   );
+}
+
+/*
+ * Moving keyframes in page time. Every keyframe of an affected animation is noted with its page time and offset;
+ * the moved ones shift by dt and only their own animation's delay and duration change:
+ * - Dragging the first (0 %) or last (100 %) keyframe moves that edge of the animation. The other keyframes
+ *   keep their percentages, so they stretch along – what changing a CSS duration does.
+ * - With Shift (keepTimes) the other keyframes keep their times instead and the span is rebuilt around them:
+ *   an animation with a 0 % keyframe starts at its earliest keyframe, one with a 100 % keyframe ends at its latest.
+ * In both, a keyframe pulled past an edge takes that edge with it.
+ */
+function planMove(list, g, anchor) {
+  const plans = new Map();
+  for (const p of list) {
+    const a = animBy(p.name);
+    if (!plans.has(a)) {
+      const dur = Math.max(1, a.timing.duration);
+      // Page time of this animation's 0 %: the dragged row's own delay (rows can be staggered), else the rule's.
+      const base = a.name === g.name ? g.delay : a.timing.delay;
+      plans.set(a, {
+        a,
+        base,
+        delay: a.timing.delay,
+        dur,
+        offsets: a.keyframes.map((b) => [...b.offsets]),
+        times: a.keyframes.map((b) => b.offsets.map((o) => base + (o / 100) * dur)),
+        moved: a.keyframes.map((b) => b.offsets.map(() => false)),
+        hasStart: a.keyframes.some((b) => b.offsets.some((o) => o <= 0.001)),
+        hasEnd: a.keyframes.some((b) => b.offsets.some((o) => o >= 99.999)),
+        movesStart: false, // is a 0 % / 100 % keyframe among the moved ones?
+        movesEnd: false,
+      });
+    }
+    const pl = plans.get(a);
+    pl.moved[p.bi][p.oi] = true;
+    const o = a.keyframes[p.bi].offsets[p.oi];
+    if (o <= 0.001) pl.movesStart = true;
+    if (o >= 99.999) pl.movesEnd = true;
+  }
+  const all = [...plans.values()];
+  const movedTimes = all.flatMap((pl) => pl.times.flatMap((ts, bi) => ts.filter((_, oi) => pl.moved[bi][oi])));
+  const ap = plans.get(animBy(anchor.name));
+  return { plans: all, earliest: Math.min(...movedTimes), anchorT: ap.times[anchor.bi][anchor.oi], dt: null };
+}
+
+function applyMove(plan, dt, keepTimes) {
+  for (const pl of plan.plans) {
+    const times = pl.times.map((ts, bi) => ts.map((t, oi) => (pl.moved[bi][oi] ? t + dt : t)));
+    const movedTimes = times.flatMap((ts, bi) => ts.filter((_, oi) => pl.moved[bi][oi]));
+    let start;
+    let end;
+    if (keepTimes) {
+      const flat = times.flat();
+      start = pl.hasStart ? Math.min(...flat) : Math.min(pl.base, ...flat);
+      end = pl.hasEnd ? Math.max(...flat) : Math.max(pl.base + pl.dur, ...flat);
+    } else {
+      start = Math.min(pl.base + (pl.movesStart ? dt : 0), ...movedTimes);
+      end = Math.max(pl.base + pl.dur + (pl.movesEnd ? dt : 0), ...movedTimes);
+    }
+    pl.a.timing.delay = Math.round(pl.delay + (start - pl.base));
+    pl.a.timing.duration = Math.max(1, Math.round(end - start));
+    const zero = pl.base + (pl.a.timing.delay - pl.delay); // page time of the new 0 %
+    const d = pl.a.timing.duration;
+    const offsetOf = (t) => clamp(Math.round(((t - zero) / d) * 10000) / 100, 0, 100);
+    pl.a.keyframes.forEach((b, bi) => {
+      // Stretch mode: keyframes that weren't moved keep their percentage; with keepTimes, their time.
+      b.offsets = times[bi].map((t, oi) => (keepTimes || pl.moved[bi][oi] ? offsetOf(t) : pl.offsets[bi][oi]));
+    });
+  }
 }
 
 /** Drag on an empty track: rubber-band selection. Shift/⌘ adds to the selection, a click without dragging clears it. */
@@ -2579,7 +2683,7 @@ function renderTimeline() {
   const groups = sceneGroups();
   S.groups = groups;
   S.groupsKey = groupsKey(groups);
-  const D = (S.sceneDur = Math.max(1, ...groups.map(sceneEnd)));
+  const D = (S.sceneDur = Math.max(1, S.sceneLen || 0, ...groups.map(sceneEnd)));
   const start = viewStart();
   const span = viewSpan();
   const step = niceStep(span);
@@ -2617,12 +2721,12 @@ function updatePlayhead() {
   const now = $('#t-now');
   const total = $('#t-dur');
   if (document.activeElement !== now) now.value = Math.round(S.t);
-  if (document.activeElement !== total) total.value = Math.round(anim().timing.duration);
-  total.title = `Duration of @keyframes ${S.name} – keyframes keep their times in ms: longer adds time at the end, shorter trims it (the Timing panel stretches them instead)`;
+  if (document.activeElement !== total) total.value = Math.round(sceneDur());
+  total.title = 'Length of the timeline – at least as long as the longest animation; type a longer one for room to drag keyframes later. An animation’s own length changes by dragging its first or last keyframe, or in the Timing panel.';
   schedulePanel();
 }
 
-/* Time box: type a time to jump the playhead there; type a duration to resize the edited animation. */
+/* Time box: type a time to jump the playhead there; type a length for the timeline (never shorter than its animations). */
 $('#t-now').addEventListener('change', (e) => {
   const v = parseFloat(e.target.value);
   if (Number.isNaN(v) || !S.model) return;
@@ -2632,12 +2736,13 @@ $('#t-now').addEventListener('change', (e) => {
   ensurePlayheadVisible();
   updatePlayhead();
 });
-$('#t-dur').addEventListener('input', (e) => {
+$('#t-dur').addEventListener('change', (e) => {
   const v = parseFloat(e.target.value);
-  if (Number.isNaN(v) || v < 1 || !S.model) return;
-  change(() => setDuration(v, { keepTimes: true }), { render: 'light' });
+  if (Number.isNaN(v) || !S.model) return;
+  S.sceneLen = Math.max(0, Math.round(v)); // view setting only – nothing in the file changes
+  resetTimelineView();
+  renderTimeline();
 });
-$('#t-dur').addEventListener('change', () => S.mode2 !== 'editor' && renderInspector()); // the Timing panel shows it too
 for (const input of [$('#t-now'), $('#t-dur')]) {
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === 'Escape') input.blur();

@@ -193,13 +193,15 @@ code { font-family: var(--mono); background: var(--panel-2); padding: 1px 5px; b
 .resizer { position: absolute; z-index: 6; touch-action: none; }
 .resizer::after { content: ""; position: absolute; background: var(--accent); opacity: 0; transition: opacity 0.12s; }
 .resizer:hover::after, .resizer.active::after { opacity: 1; }
-.resizer.col { top: 0; bottom: 0; right: var(--panel-w, 320px); width: 7px; margin-right: -4px; cursor: col-resize; }
-.resizer.col::after { top: 0; bottom: 0; left: 3px; width: 1px; }
-.resizer.row { left: 0; right: 0; top: -4px; height: 7px; cursor: row-resize; }
-.resizer.row::after { left: 0; right: 0; top: 3px; height: 1px; }
-body.resizing.col, body.resizing.col * { cursor: col-resize !important; }
-body.resizing.row, body.resizing.row * { cursor: row-resize !important; }
-body.resizing iframe { pointer-events: none; } /* the preview must not swallow the drag */
+.resizer-col { top: 0; bottom: 0; right: var(--panel-w, 320px); width: 7px; margin-right: -4px; cursor: col-resize; }
+.resizer-col::after { top: 0; bottom: 0; left: 3px; width: 1px; }
+.resizer-row { left: 0; right: 0; top: -4px; height: 7px; cursor: row-resize; }
+.resizer-row::after { left: 0; right: 0; top: 3px; height: 1px; }
+body.resizing-col, body.resizing-col * { cursor: col-resize !important; }
+body.resizing-row, body.resizing-row * { cursor: row-resize !important; }
+body.resizing-col iframe, body.resizing-row iframe { pointer-events: none; } /* the preview must not swallow the drag */
+/* Resizing re-lays out only what changed size: each region is its own layout and paint island. */
+.inspector, .frame-wrap, .tracks { contain: strict; }
 
 .stage { display: grid; grid-template-rows: auto 1fr; min-height: 0; min-width: 0; background: #151515; }
 .stage-bar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; }
@@ -461,7 +463,7 @@ button.primary { color: var(--offwhite); }
 @media (max-width: 760px) {
   .workspace { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
   .inspector { border-left: 0; border-top: 1px solid var(--line); max-height: 40vh; }
-  .resizer.col { display: none; } /* the panel sits below the preview here */
+  .resizer-col { display: none; } /* the panel sits below the preview here */
   .hint { display: none; }
   :root { --label-w: 120px; }
 }
