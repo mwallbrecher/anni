@@ -3,7 +3,7 @@
 // and llms.txt. Sessions stay out of all of it (noindex, robots Disallow). Keep the copy in step with renderHome
 // in web/app.js.
 
-const TITLE = 'anni – edit CSS animations in an editor built for it';
+const TITLE = 'anni – edit CSS animations in an editor';
 const DESCRIPTION =
   'Simple, but powerful: your coding agent opens the CSS animations from your project in anni over MCP. You tune keyframes, timing and easing on your real page; the agent writes them back.';
 
@@ -83,7 +83,7 @@ export const seoTitle = TITLE;
 /** The homepage as plain HTML, for crawlers and agents that read the page without running it. */
 export function seoBody(origin) {
   return `<article class="site-static">
-        <h1>Edit CSS animations in an editor built for it.</h1>
+        <h1>Edit CSS animations in an editor.</h1>
         <p>${esc(DESCRIPTION)}</p>
         <h2>Setup</h2>
         <p>Tell your coding agent: “open my css animation in ${esc(publicHost(origin))}” – it sets anni up on its own (see <a href="${origin}/llms.txt">llms.txt</a>). Or set it up yourself:</p>
@@ -119,7 +119,7 @@ export const sitemapXml = (origin) => `<?xml version="1.0" encoding="UTF-8"?>
 /** llms.txt (llmstxt.org): what anni is and how an agent connects to it, in Markdown. */
 export const llmsTxt = (origin) => `# anni
 
-> Edit CSS animations in an editor built for it. ${DESCRIPTION}
+> Edit CSS animations in an editor. ${DESCRIPTION}
 
 anni is not a standalone animation tool: it edits the keyframes and animations that already live in a project, on the
 project's own page, and hands the result back to the code. Instead of re-prompting an agent to describe easing and

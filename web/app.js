@@ -276,7 +276,7 @@ function renderHome(mcpUrl, { tokenRequired = false } = {}) {
     h(
       'div',
       { class: 'home-final' },
-      h('h1', {}, 'Edit CSS animations in an editor built for it.'),
+      h('h1', {}, 'Edit CSS animations in an editor.'),
       h('p', { class: 'lede' }, 'Your agent turns values from your code into controls – animations on a timeline, styles, any literal. You tune them live, it writes them back.'),
       chat,
     ),
@@ -669,6 +669,9 @@ function homeDemo() {
       doc.querySelector('.ball').insertAdjacentHTML('beforebegin', ADDITION.html); // under the ball, like withAddition
       const a = doc.getAnimations().find((x) => !tracks.some((t) => t.a === x));
       if (!a) return;
+      // Hidden until its row comes in. filter, not opacity: the pulse animates opacity itself.
+      const el = a.effect.target;
+      el.style.filter = 'opacity(0)';
       const sync = () => {
         a.effect.updateTiming(timing());
         a.currentTime = anims[0].currentTime;
@@ -685,6 +688,10 @@ function homeDemo() {
         select(sel);
         tl.lastElementChild.previousElementSibling.classList.add('new');
         t.marks.forEach((m, i) => m.style.setProperty('--at', t.frames[i].offset));
+        // It fades in with its row and blinks a few times.
+        el.style.filter = '';
+        const on = 'opacity(1)', off = 'opacity(0.15)';
+        el.animate([{ filter: 'opacity(0)' }, { filter: on, offset: 0.25 }, { filter: off, offset: 0.4 }, { filter: on, offset: 0.55 }, { filter: off, offset: 0.7 }, { filter: on, offset: 0.85 }, { filter: on }], { duration: 1600, easing: 'ease-out' });
       };
     };
 
@@ -822,7 +829,7 @@ function homeChat(demo) {
   const term = h(
     'div',
     { class: 'term' },
-    h('div', { class: 'term-bar' }, homeWindowControls(), h('span', {}, '~/my-site')),
+    h('div', { class: 'term-bar' }, homeWindowControls(), h('span', {}, '~/terminal')),
     log,
     h('form', { class: 'term-input', onsubmit: send }, h('label', {}, h('span', { class: 'term-mark' }, '>'), input), go),
   );
