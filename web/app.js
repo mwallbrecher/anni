@@ -1083,9 +1083,9 @@ function homeInstall(agents, tokenRequired, host) {
   };
   // What to tell the agent, per way to connect – it reads the rest on the site (llms.txt) and sets it up.
   const asks = {
-    mcp: [`open my css animation in ${host}`, 'Tell your agent – it sets anni up on its own and opens your animation.'],
-    local: [`set up ${host} but open my css animation locally`, 'Tell your agent – it sets anni up and opens your animation only on your machine.'],
-    http: [`open my css animation in ${host} without installing anything`, 'Tell your agent – it opens your animation without installing anything.'],
+    mcp: [`open my css animation in ${host}`, 'It sets anni up on its own and opens your animation.'],
+    local: [`set up ${host} but open my css animation locally`, 'It sets anni up and opens your animation only on your machine.'],
+    http: [`open my css animation in ${host} without installing anything`, 'It opens your animation without installing anything.'],
   };
   const askCode = h('code', { class: 'ask' });
   const askHint = h('p', { class: 'muted install-hint' });
@@ -1119,8 +1119,10 @@ function homeInstall(agents, tokenRequired, host) {
     'div',
     { class: 'setup late' },
     h('div', { class: 'setup-head' }, h('h2', {}, 'Setup')),
+    h('p', { class: 'ask-label' }, 'Tell your agent'),
     h('div', { class: 'install' }, askSeg, prompt),
     askHint,
+    h('p', { class: 'muted install-hint' }, 'By setting it up, you agree to the ', h('a', { href: '/terms' }, 'terms of use'), '.'),
     h('details', { class: 'setup-more' }, h('summary', {}, 'Manual setup'), h('div', { class: 'setup-head' }, agentSeg), h('div', { class: 'install' }, modeSeg, line), hint),
   );
 }

@@ -274,7 +274,9 @@ async function handle(req, res) {
   const asset = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
   // Subfolders (brand/, fonts/) are fine; no segment may start with a dot, which rules out `..`.
   if (!/^(?:[\w-][\w.-]*\/)*[\w-][\w.-]*$/.test(asset)) return send(res, 404, 'Not found', 'text/plain');
-  return serveFile(res, path.join(WEB_DIR, asset));
+  // Pages without an extension (/terms) are their .html file, as on anni.run.
+  const file = path.join(WEB_DIR, asset);
+  return serveFile(res, !path.extname(asset) && fs.existsSync(`${file}.html`) ? `${file}.html` : file);
 }
 
 export function startServer(port = PORT) {

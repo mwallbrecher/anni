@@ -93,13 +93,14 @@ export function seoBody(origin) {
         <ol>${STEPS.map(([t, d]) => `<li><strong>${esc(t)}.</strong> ${esc(d)}</li>`).join('')}</ol>
         <h2>Questions</h2>
         <dl>${FAQ.map(([q, a]) => `<dt>${esc(q)}</dt><dd>${esc(a)}</dd>`).join('')}</dl>
-        <p><a href="https://github.com/mwallbrecher/anni">Source on GitHub</a> · <a href="https://www.npmjs.com/package/anni-mcp">anni-mcp on npm</a> · <a href="${origin}/llms.txt">llms.txt</a></p>
+        <p><a href="https://github.com/mwallbrecher/anni">Source on GitHub</a> · <a href="https://www.npmjs.com/package/anni-mcp">anni-mcp on npm</a> · <a href="${origin}/llms.txt">llms.txt</a> · <a href="${origin}/terms">Terms of use</a></p>
       </article>`;
 }
 
 export const robotsTxt = (origin) => `User-agent: *
 Allow: /$
 Allow: /llms.txt
+Allow: /terms
 Allow: /brand/
 Disallow: /s/
 Disallow: /api/
@@ -111,6 +112,7 @@ Sitemap: ${origin}/sitemap.xml
 export const sitemapXml = (origin) => `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>${origin}/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>
+  <url><loc>${origin}/terms</loc><changefreq>yearly</changefreq><priority>0.2</priority></url>
 </urlset>
 `;
 
