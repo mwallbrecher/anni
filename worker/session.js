@@ -6,7 +6,7 @@ import { changeMarkdown, changeSummary, cssChanges, lineDiff } from '../src/chan
 import { EXAMPLE_SESSION } from '../web/example.js';
 
 const STYLE_OPEN_RE = /(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi;
-const MIME = {
+export const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.htm': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -39,7 +39,7 @@ const LIVE_PUSH_MAX = 512 * 1024; // live state larger than this isn't pushed; w
 const NOINDEX = { 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow' };
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...NOINDEX } });
 const text = (body, type, status = 200) => new Response(body, { status, headers: { 'Content-Type': type, ...NOINDEX } });
-const ext = (p) => (p.match(/\.[a-z0-9]+$/i) || [''])[0].toLowerCase();
+export const ext = (p) => (p.match(/\.[a-z0-9]+$/i) || [''])[0].toLowerCase();
 
 /*
  * Access. Whoever starts a session gets an owner token (the agent's sidecar opens the link with it in the

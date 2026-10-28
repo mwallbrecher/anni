@@ -6,7 +6,9 @@ import { createMcpHandler } from 'agents/mcp/server';
 import { call, createServer, isSessionId, openSession, sessionStub } from './mcp.js';
 import { editorAsset, isEditorAsset, versionOf } from './assets.js';
 import { llmsTxt, robotsTxt, sitemapXml } from './seo.js';
-import { EXAMPLE_ID } from '../web/example.js';
+import { EXAMPLE_ID, EXAMPLE_SESSION } from '../web/example.js';
+import { kindOf, renderText } from '../src/css.js';
+import { MIME, ext } from './session.js';
 
 export { AnniSession } from './session.js';
 
@@ -23,6 +25,36 @@ function locate(url, env) {
   }
   const m = url.pathname.match(/^\/s\/([a-z0-9]{8,32})(\/.*)?$/i);
   if (m) return { id: m[1].toLowerCase(), base: `/s/${m[1].toLowerCase()}`, rest: m[2] };
+  return null;
+}
+
+/**
+ * The shared example is the same for every visitor and only changes with a deploy, yet one session object serves
+ * it – a busy homepage would queue up there. So what needs no session state is answered here: its files (straight
+ * from this deploy) and renders, selects and goodbyes from watching tabs (nobody edits the example). Its session
+ * state comes from the edge cache (see below). The object keeps the open tabs' sockets and makes copies.
+ */
+async function exampleRequest(request, path) {
+  const ex = EXAMPLE_SESSION;
+  if (request.method === 'GET' && path.startsWith('/site/')) {
+    const p = decodeURIComponent(path.slice('/site/'.length));
+    const f = ex.files.find((x) => x.path === p);
+    if (!f || (p === ex.file && kindOf(p) === 'html')) return null; // the edited HTML file gets tagged by the session
+    return new Response(f.content, { headers: { 'Content-Type': MIME[ext(p)] || 'application/octet-stream', 'Cache-Control': 'no-cache', 'X-Robots-Tag': 'noindex, nofollow' } });
+  }
+  if (request.method !== 'POST') return null;
+  if (path === '/api/select' || path === '/api/bye') return json({ ok: true });
+  if (path === '/api/render') {
+    const body = await request.text();
+    if (body.length > 256 * 1024) return json({ error: 'Too large' }, 413);
+    try {
+      const { model } = JSON.parse(body);
+      const file = ex.files.find((f) => f.path === ex.file).content;
+      return json({ css: renderText(file, kindOf(ex.file), model, ex.file).css });
+    } catch (e) {
+      return json({ error: e.message }, 400);
+    }
+  }
   return null;
 }
 
@@ -74,13 +106,28 @@ export default {
           return json({ error: e.message }, 400);
         }
       }
+      if (loc.id === EXAMPLE_ID) {
+        const r = await exampleRequest(request, inner.pathname);
+        if (r) return r;
+      }
       const body = request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.arrayBuffer();
       const send = () => sessionStub(env, loc.id).fetch(new Request(inner, { method: request.method, headers, body, redirect: 'manual' }));
+      // The example's state is the same for every watcher: cached at the edge for 30 s, per deploy.
+      const cacheKey = loc.id === EXAMPLE_ID && request.method === 'GET' && inner.pathname === '/api/session' ? new Request(`${url.origin}${loc.base}/api/session?cached=${versionOf(env)}`) : null;
+      const hit = cacheKey && (await caches.default.match(cacheKey).catch(() => null)); // a cache that fails is just a miss
+      if (hit) return new Response(hit.body, { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
+      let res;
       try {
-        return await send();
+        res = await send();
       } catch {
-        return send(); // an outdated session object resets itself (see AnniSession.fetch); the retry reaches the new one
+        res = await send(); // an outdated session object resets itself (see AnniSession.fetch); the retry reaches the new one
       }
+      if (cacheKey && res.ok) {
+        const text = await res.text();
+        if (JSON.parse(text).access?.role === 'viewer') ctx.waitUntil(caches.default.put(cacheKey, new Response(text, { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=30' } })).catch(() => {}));
+        return new Response(text, { status: res.status, headers: res.headers });
+      }
+      return res;
     }
     if (url.pathname === '/mcp') {
       return createMcpHandler((...a) => createServer(env, url.origin, ...a), {
