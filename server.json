@@ -1,0 +1,36 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.mwallbrecher/anni",
+  "title": "anni",
+  "description": "CSS animation editor for coding agents: tune keyframes on a timeline, the agent writes them back.",
+  "websiteUrl": "https://anni.run",
+  "repository": {
+    "url": "https://github.com/mwallbrecher/anni",
+    "source": "github"
+  },
+  "version": "0.3.1",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "anni-mcp",
+      "version": "0.3.1",
+      "runtimeHint": "npx",
+      "runtimeArguments": [
+        {
+          "type": "named",
+          "name": "-y"
+        }
+      ],
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://anni.run/mcp"
+    }
+  ]
+}
