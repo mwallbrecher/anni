@@ -1487,10 +1487,30 @@ async function refreshAccess() {
   applyRole();
 }
 
-/** Watching tabs follow the editing tab's live state. */
+/**
+ * Watching tabs follow the editing tab's live state. The session pushes it (model and CSS, rendered once for all
+ * watchers); only when it was too large to push does the tab fetch it.
+ */
 let following = false;
-async function followLiveState() {
-  if (!S.readonly || following) return;
+async function followLiveState(pushed) {
+  if (!S.readonly) return;
+  if (pushed?.values && S.schema) {
+    S.values = { ...pushed.values };
+    renderSchemaPanel();
+    return applySchemaPreview();
+  }
+  if (pushed?.animations && S.model) {
+    if (JSON.stringify(pushed.animations) !== snapshot()) {
+      S.model = { ...S.model, animations: pushed.animations };
+      if (!anim()) S.name = S.model.animations[0].name;
+      if (S.sel && anim().keyframes[S.sel.bi]?.offsets[S.sel.oi] === undefined) S.sel = null;
+      renderAll();
+    }
+    pushSeq++; // a render still on its way is older than this
+    S.css = pushed.css;
+    return applyCss();
+  }
+  if (following) return;
   following = true;
   try {
     const d = await api('GET', '/api/session');
@@ -4780,7 +4800,7 @@ function listen() {
   events = new EventSource(`${BASE}/api/events?tab=${TAB}&load=${LOAD}`); // EventSource can't send headers
   events.addEventListener('version', (e) => checkVersion(JSON.parse(e.data).version));
   events.addEventListener('access', () => refreshAccess().catch(() => {}));
-  events.addEventListener('live', () => followLiveState().catch(() => {}));
+  events.addEventListener('live', (e) => followLiveState(JSON.parse(e.data || '{}')).catch(() => {}));
   events.addEventListener('closed', () => showLock({ closed: true })); // the owner closed the session
   events.addEventListener('session', () => load());
   // The agent changed the files (a new element, another animation …): show it right away. The server has already

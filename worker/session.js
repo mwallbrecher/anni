@@ -34,6 +34,7 @@ const MAX_TOTAL = 24 * 1024 * 1024;
 const MAX_FILES = 300;
 const MAX_CONTROLS = 400;
 const TTL_MS = 7 * 24 * 60 * 60 * 1000; // a session is wiped after a week without activity
+const LIVE_PUSH_MAX = 512 * 1024; // live state larger than this isn't pushed; watching tabs fetch it instead
 
 const NOINDEX = { 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow' };
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...NOINDEX } });
@@ -834,7 +835,11 @@ body { display: grid !important; place-items: center !important; background: tra
     }
   }
 
-  /** Watching tabs (everyone but the editing tab) reload the live state – at most every 250 ms while editing. */
+  /**
+   * Watching tabs (everyone but the editing tab) follow the live state – at most every 250 ms while editing. The
+   * model and its CSS are rendered once here and pushed to all of them, so a session with many watchers costs one
+   * render per tick instead of two requests per watcher. Streams whose access was taken away get nothing more.
+   */
   followLive(now = false) {
     if (!now && Date.now() - this.lastLive < 250) {
       this.liveTimer ||= setTimeout(() => {
@@ -844,7 +849,22 @@ body { display: grid !important; place-items: center !important; background: tra
       return;
     }
     this.lastLive = Date.now();
-    this.broadcast('live', {}, (s) => s.tab !== this.editTab?.tab);
+    this.broadcast('live', this.liveState(), (s) => s.tab !== this.editTab?.tab && this.mayWatch(s));
+  }
+
+  /** What a watching tab shows: the animations (with unsaved edits) and the CSS for them, or `pull` when too large. */
+  liveState() {
+    if (!this.meta) return {};
+    if (this.isSchema) return { values: this.dirty && this.live ? this.live : this.meta.values };
+    const fresh = this.model();
+    const model = this.dirty && this.live ? { ...fresh, animations: this.live.animations } : fresh;
+    const state = { animations: model.animations, css: renderText(this.files[this.meta.file], kindOf(this.meta.file), model, this.meta.file).css };
+    return JSON.stringify(state).length > LIVE_PUSH_MAX ? { pull: true } : state;
+  }
+
+  /** Whether a stream may still watch – access can change after it connected. */
+  mayWatch(info) {
+    return info.isOwner || this.mode() === 'public' || this.meta?.guests?.[info.guestId]?.status === 'approved';
   }
 
   events(who) {
@@ -855,7 +875,7 @@ body { display: grid !important; place-items: center !important; background: tra
         controller = c;
         // A deploy restarts this object and drops the stream; the tab reconnects and learns the new version here.
         c.enqueue(new TextEncoder().encode(`event: version\ndata: ${JSON.stringify({ version: versionOf(this.env) })}\n\n`));
-        this.streams.set(c, { tab: who.tab, load: who.load, role: who.role });
+        this.streams.set(c, { tab: who.tab, load: who.load, role: who.role, isOwner: who.isOwner, guestId: who.guestId });
         ping = setInterval(() => {
           try {
             c.enqueue(new TextEncoder().encode(': ping\n\n'));
