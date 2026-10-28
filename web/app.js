@@ -1081,8 +1081,15 @@ function homeInstall(agents, tokenRequired, host) {
     );
     return line;
   };
-  const ask = `open my css animation in ${host}`;
-  const prompt = copyLine(h('span', { class: 'prompt-caret' }, '>'), h('code', { class: 'ask' }, ask), () => ask);
+  // What to tell the agent, per way to connect – it reads the rest on the site (llms.txt) and sets it up.
+  const asks = {
+    mcp: [`open my css animation in ${host}`, 'Tell your agent – it sets anni up on its own and opens your animation.'],
+    local: [`set up ${host} but open my css animation locally`, 'Tell your agent – it sets anni up and opens your animation only on your machine.'],
+    http: [`open my css animation in ${host} without installing anything`, 'Tell your agent – it opens your animation without installing anything.'],
+  };
+  const askCode = h('code', { class: 'ask' });
+  const askHint = h('p', { class: 'muted install-hint' });
+  const prompt = copyLine(h('span', { class: 'prompt-caret' }, '>'), askCode, () => asks[mode][0]);
 
   const code = h('code', {});
   const hint = h('p', { class: 'muted install-hint' });
@@ -1090,6 +1097,7 @@ function homeInstall(agents, tokenRequired, host) {
   const tabs = (items, pick) => h('div', { class: 'seg', role: 'tablist' }, ...items.map((v) => h('button', { 'data-v': v, role: 'tab', onclick: () => pick(v) }, v)));
   const agentSeg = tabs(Object.keys(agents), (v) => set(v, mode));
   const modeSeg = tabs(Object.keys(MODE_HINTS), (v) => set(agent, v));
+  const askSeg = tabs(Object.keys(MODE_HINTS), (v) => set(agent, v)); // the same choice, above the fold
   const line = copyLine(dollar, code, () => agents[agent][mode]);
   const set = (a, m) => {
     agent = a;
@@ -1099,7 +1107,8 @@ function homeInstall(agents, tokenRequired, host) {
       localStorage.setItem('anni.install', m);
     } catch {}
     for (const b of agentSeg.children) b.classList.toggle('on', b.dataset.v === a);
-    for (const b of modeSeg.children) b.classList.toggle('on', b.dataset.v === m);
+    for (const b of [...modeSeg.children, ...askSeg.children]) b.classList.toggle('on', b.dataset.v === m);
+    [askCode.textContent, askHint.textContent] = asks[m];
     const json = agents[a].json;
     dollar.hidden = !!json;
     code.textContent = agents[a][m];
@@ -1110,9 +1119,9 @@ function homeInstall(agents, tokenRequired, host) {
     'div',
     { class: 'setup late' },
     h('div', { class: 'setup-head' }, h('h2', {}, 'Setup')),
-    prompt,
-    h('p', { class: 'muted install-hint' }, 'Tell your agent – it sets anni up on its own and opens your animation.'),
-    h('details', { class: 'setup-more' }, h('summary', {}, 'Individual setup'), h('div', { class: 'setup-head' }, agentSeg), h('div', { class: 'install' }, modeSeg, line), hint),
+    h('div', { class: 'install' }, askSeg, prompt),
+    askHint,
+    h('details', { class: 'setup-more' }, h('summary', {}, 'Manual setup'), h('div', { class: 'setup-head' }, agentSeg), h('div', { class: 'install' }, modeSeg, line), hint),
   );
 }
 

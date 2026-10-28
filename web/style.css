@@ -611,7 +611,8 @@ button.primary { color: var(--offwhite); }
 .cmdline.copied, .cmdline.copied:hover { border-color: var(--accent); }
 .cmdline.copied .copy-state { color: var(--accent); }
 .home .install-hint { margin: 8px 0 0; font-size: 11px; line-height: 1.5; }
-.cmdline code.ask { font-family: var(--display); font-size: 13px; color: var(--bright); } /* a message to the agent, as in the terminal */
+.cmdline code.ask { font-family: var(--display); font-size: 13px; color: var(--bright); white-space: normal; } /* a message to the agent, as in the terminal; it wraps, never cut off */
+.cmdline:has(.ask) { height: auto; min-height: 40px; padding-block: 9px; }
 /* The setup per agent, folded under the one line. */
 .setup-more { margin-top: 18px; }
 .setup-more summary { display: inline-flex; align-items: center; gap: 8px; font-family: var(--display); font-size: 12px; color: var(--muted); cursor: pointer; list-style: none; }

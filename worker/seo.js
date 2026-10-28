@@ -143,7 +143,17 @@ Then the user says: "open my css animation in anni" (or names a file and an anim
 
 ## For coding agents: "open my animation in ${publicHost(origin)}"
 
-Open it on ${publicHost(origin)}. If you have anni's MCP tools, call \`open_animation\` with the file path and send the user the
+Users ask for one of three things:
+
+- **"open my css animation in ${publicHost(origin)}"** – the default: open it on ${publicHost(origin)} (below).
+- **"set up ${publicHost(origin)} but open my css animation locally"** – they want anni, but nothing online: set up local mode,
+  \`claude mcp add anni -- npx -y -p anni-mcp anni-mcp-local\` (on native Windows \`claude mcp add anni -- cmd /c npx -y -p anni-mcp anni-mcp-local\`,
+  for Codex \`codex mcp add anni -- npx -y -p anni-mcp anni-mcp-local\`), then call \`open_animation\` with the file path. The editor opens
+  on the user's machine (127.0.0.1:4747) and saves straight to the file. Nothing goes to ${publicHost(origin)}, so there is no link to share.
+- **"open my css animation in ${publicHost(origin)} without installing anything"** – use the HTTP API (2. below), or the remote MCP
+  endpoint \`${origin}/mcp\` if your client takes a URL.
+
+To open it on ${publicHost(origin)}: if you have anni's MCP tools, call \`open_animation\` with the file path and send the user the
 link. If you don't, either:
 
 1. **Add the MCP server** (lasting; the tools appear once the client reloads its MCP servers), for example
