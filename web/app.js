@@ -214,10 +214,11 @@ async function load({ keepTime = false } = {}) {
 /* ---------- homepage (root of a hosted anni) ---------- */
 
 const PROMPT = 'open my css animation in anni';
+// mcp and http open sessions on anni.run, the product; local mode is the exception, for secrets or nothing live.
 const MODE_HINTS = {
-  mcp: 'The sidecar from npm reads and writes your files itself – their contents never pass through the model.',
-  local: 'Everything on your machine: the editor runs offline on 127.0.0.1, without anni.run.',
-  http: 'Zero-install, for any Streamable HTTP client – the agent passes file contents itself.',
+  mcp: 'On anni.run, where you can share sessions: the sidecar from npm reads and writes your files itself – their contents never pass through the model.',
+  local: 'Only on your machine, for code with secrets or when nothing should go live: the editor runs on 127.0.0.1 – no session on anni.run, no sharing.',
+  http: 'On anni.run without installing anything, for any Streamable HTTP client – the agent passes file contents itself.',
 };
 const mcpJson = (server) => JSON.stringify({ mcpServers: { anni: server } }, null, 1).replace(/\n\s*/g, ' '); // one line, spaced
 /** The setup line per agent and way to connect. `json` is the mcpServers entry most other clients take. */
@@ -239,6 +240,12 @@ const installCommands = (mcpUrl) => ({
     http: mcpJson({ url: mcpUrl }),
   },
 });
+
+/** The domain to name to an agent: this instance's, or anni.run when it runs locally (an agent can't visit 127.0.0.1). */
+const publicHost = (url) => {
+  const { host, hostname } = new URL(url);
+  return /^(localhost|127(\.\d+){3}|\[::1\])$/.test(hostname) || hostname.endsWith('.localhost') ? 'anni.run' : host;
+};
 
 const home = { raf: 0, drift: 0, timers: [] };
 function stopBoot() {
@@ -274,7 +281,7 @@ function renderHome(mcpUrl, { tokenRequired = false } = {}) {
       chat,
     ),
   );
-  card.replaceChildren(head, demo, homeInstall(installCommands(mcpUrl), tokenRequired), ...homeHow());
+  card.replaceChildren(head, demo, homeInstall(installCommands(mcpUrl), tokenRequired, publicHost(mcpUrl)), ...homeHow());
   for (const sec of card.querySelectorAll('.home-sec')) collapsible(sec);
   homeNav(card);
   bootHome(head, typed, demo, chat);
@@ -1037,7 +1044,11 @@ function homeHow() {
 }
 
 /** Setup: pick the agent and the way to connect, get one line; a click on the line copies it. */
-function homeInstall(agents, tokenRequired) {
+/**
+ * Setup: one line to tell the agent – coding agents set up anni.run on their own from it (anni.run's page and
+ * llms.txt tell them how) – and, folded, the setup line per agent and way to connect.
+ */
+function homeInstall(agents, tokenRequired, host) {
   const stored = (key, fallback, ok) => {
     try {
       const v = localStorage.getItem(key);
@@ -1048,16 +1059,38 @@ function homeInstall(agents, tokenRequired) {
   };
   let agent = stored('anni.agent', 'Claude Code', (v) => v in agents);
   let mode = stored('anni.install', 'mcp', (v) => v in MODE_HINTS);
-  const code = h('code', {});
   const COPY_ICON = '<svg viewBox="0 0 14 14" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="4.5" y="4.5" width="8.5" height="8.5"/><path d="M9.5 2.5V1H1v8.5h1.5"/></svg>';
-  const state = h('span', { class: 'copy-state', 'aria-label': 'Copy' });
-  state.innerHTML = COPY_ICON;
+  // A line that copies its text on a click and says so.
+  const copyLine = (lead, code, text) => {
+    const state = h('span', { class: 'copy-state', 'aria-label': 'Copy' });
+    state.innerHTML = COPY_ICON;
+    const line = h('button', { class: 'cmdline', title: 'Click to copy' }, lead, code, state);
+    line.addEventListener('click', () =>
+      navigator.clipboard.writeText(text()).then(
+        () => {
+          line.classList.add('copied');
+          state.textContent = 'Copied';
+          clearTimeout(line.t);
+          line.t = setTimeout(() => {
+            line.classList.remove('copied');
+            state.innerHTML = COPY_ICON;
+          }, 1600);
+        },
+        () => toast('Could not copy – select the text instead'),
+      ),
+    );
+    return line;
+  };
+  const ask = `open my css animation in ${host}`;
+  const prompt = copyLine(h('span', { class: 'prompt-caret' }, '>'), h('code', { class: 'ask' }, ask), () => ask);
+
+  const code = h('code', {});
   const hint = h('p', { class: 'muted install-hint' });
   const dollar = h('span', { class: 'dollar' }, '$');
   const tabs = (items, pick) => h('div', { class: 'seg', role: 'tablist' }, ...items.map((v) => h('button', { 'data-v': v, role: 'tab', onclick: () => pick(v) }, v)));
   const agentSeg = tabs(Object.keys(agents), (v) => set(v, mode));
   const modeSeg = tabs(Object.keys(MODE_HINTS), (v) => set(agent, v));
-  const line = h('button', { class: 'cmdline', title: 'Click to copy' }, dollar, code, state);
+  const line = copyLine(dollar, code, () => agents[agent][mode]);
   const set = (a, m) => {
     agent = a;
     mode = m;
@@ -1072,22 +1105,15 @@ function homeInstall(agents, tokenRequired) {
     code.textContent = agents[a][m];
     hint.textContent = (json ? 'Add it to your client’s MCP config (mcpServers). ' : '') + MODE_HINTS[m] + (tokenRequired && m === 'http' ? ' This instance requires a token (ANNI_TOKEN).' : '');
   };
-  line.addEventListener('click', () =>
-    navigator.clipboard.writeText(agents[agent][mode]).then(
-      () => {
-        line.classList.add('copied');
-        state.textContent = 'Copied';
-        clearTimeout(line.t);
-        line.t = setTimeout(() => {
-          line.classList.remove('copied');
-          state.innerHTML = COPY_ICON;
-        }, 1600);
-      },
-      () => toast('Could not copy – select the command instead'),
-    ),
-  );
   set(agent, mode);
-  return h('div', { class: 'setup late' }, h('div', { class: 'setup-head' }, h('h2', {}, 'Setup'), agentSeg), h('div', { class: 'install' }, modeSeg, line), hint, h('p', { class: 'muted install-hint' }, 'Use in terminal or simply tell your agent.'));
+  return h(
+    'div',
+    { class: 'setup late' },
+    h('div', { class: 'setup-head' }, h('h2', {}, 'Setup')),
+    prompt,
+    h('p', { class: 'muted install-hint' }, 'Tell your agent – it sets anni up on its own and opens your animation.'),
+    h('details', { class: 'setup-more' }, h('summary', {}, 'Individual setup'), h('div', { class: 'setup-head' }, agentSeg), h('div', { class: 'install' }, modeSeg, line), hint),
+  );
 }
 
 /* ---------- access: lock screen, roles, requests, watching (hosted only) ---------- */

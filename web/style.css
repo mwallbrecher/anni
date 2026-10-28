@@ -611,6 +611,15 @@ button.primary { color: var(--offwhite); }
 .cmdline.copied, .cmdline.copied:hover { border-color: var(--accent); }
 .cmdline.copied .copy-state { color: var(--accent); }
 .home .install-hint { margin: 8px 0 0; font-size: 11px; line-height: 1.5; }
+.cmdline code.ask { font-family: var(--display); font-size: 13px; color: var(--bright); } /* a message to the agent, as in the terminal */
+/* The setup per agent, folded under the one line. */
+.setup-more { margin-top: 18px; }
+.setup-more summary { display: inline-flex; align-items: center; gap: 8px; font-family: var(--display); font-size: 12px; color: var(--muted); cursor: pointer; list-style: none; }
+.setup-more summary::-webkit-details-marker { display: none; }
+.setup-more summary::before { content: "▸"; transition: transform 160ms; }
+.setup-more[open] summary::before { transform: rotate(90deg); }
+.setup-more summary:hover { color: var(--text); }
+.setup-more > .setup-head { margin: 14px 0; }
 /* How it works */
 .home-sec { margin-top: 48px; padding-top: 32px; border-top: 1px solid var(--line); } /* the divider before every heading */
 .late { opacity: 0; transform: translateY(16px); transition: opacity 600ms, transform 700ms cubic-bezier(0.2, 0.8, 0.2, 1); }

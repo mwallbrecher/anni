@@ -7,6 +7,12 @@ const TITLE = 'anni – edit CSS animations in an editor built for it';
 const DESCRIPTION =
   'Simple, but powerful: your coding agent opens the CSS animations from your project in anni over MCP. You tune keyframes, timing and easing on your real page; the agent writes them back.';
 
+/** The domain to name to an agent: this instance's, or anni.run in local development (an agent can't visit 127.0.0.1). */
+const publicHost = (origin) => {
+  const { host, hostname } = new URL(origin);
+  return /^(localhost|127(\.\d+){3}|\[::1\])$/.test(hostname) || hostname.endsWith('.localhost') ? 'anni.run' : host;
+};
+
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 const setup = (origin) => [
@@ -14,8 +20,9 @@ const setup = (origin) => [
   ['Codex', 'codex mcp add anni -- npx -y anni-mcp'],
   ['Cursor and other MCP clients (mcpServers)', '{ "mcpServers": { "anni": { "command": "npx", "args": [ "-y", "anni-mcp" ] } } }'],
   ['Zero-install, any Streamable HTTP client', `claude mcp add --transport http anni ${origin}/mcp`],
-  ['Local mode, offline on 127.0.0.1', 'claude mcp add anni -- npx -y -p anni-mcp anni-mcp-local'],
 ];
+/** Local mode: the exception, for code with secrets or users who want nothing online. */
+const LOCAL_SETUP = 'claude mcp add anni -- npx -y -p anni-mcp anni-mcp-local';
 
 const STEPS = [
   ['Your agent opens it', 'Over MCP your agent calls open_animation with a file path. The sidecar on your machine reads the stylesheet, the page that links it and its assets, and uploads them into a new session. File contents never pass through the model – a whole session costs a few hundred tokens.'],
@@ -79,8 +86,9 @@ export function seoBody(origin) {
         <h1>Edit CSS animations in an editor built for it.</h1>
         <p>${esc(DESCRIPTION)}</p>
         <h2>Setup</h2>
+        <p>Tell your coding agent: “open my css animation in ${esc(publicHost(origin))}” – it sets anni up on its own (see <a href="${origin}/llms.txt">llms.txt</a>). Or set it up yourself:</p>
         <ul>${setup(origin).map(([who, cmd]) => `<li>${esc(who)}: <code>${esc(cmd)}</code></li>`).join('')}</ul>
-        <p>Then tell your agent: “open my css animation in anni”.</p>
+        <p>Sessions live on ${esc(publicHost(origin))}, where you can share them. For code with secrets, or when nothing should go live, local mode runs the same editor only on your machine, without sharing: <code>${esc(LOCAL_SETUP)}</code></p>
         <h2>How it works</h2>
         <ol>${STEPS.map(([t, d]) => `<li><strong>${esc(t)}.</strong> ${esc(d)}</li>`).join('')}</ol>
         <h2>Questions</h2>
@@ -115,11 +123,41 @@ anni is not a standalone animation tool: it edits the keyframes and animations t
 project's own page, and hands the result back to the code. Instead of re-prompting an agent to describe easing and
 timing in English, the user drags keyframes on a timeline until the motion feels right.
 
+## ${publicHost(origin)} and local mode
+
+**${publicHost(origin)} is anni.** Every session lives there on its own subdomain: the owner edits, others watch by link or ask
+for access, anyone can edit a copy and send their changes back, and the agent waits for the owner's save. Use it unless
+the user asks otherwise.
+
+**Local mode is the exception**, for code with secrets or users who want nothing online: the same editor, from the npm
+package, runs only on the user's machine (127.0.0.1). Nothing goes live – and nothing can be shared. Use it only when
+the user asks for it.
+
 ## Setup
 
 ${setup(origin).map(([who, cmd]) => `- ${who}: \`${cmd}\``).join('\n')}
 
+Local mode, only when the user wants it: \`${LOCAL_SETUP}\`
+
 Then the user says: "open my css animation in anni" (or names a file and an animation).
+
+## For coding agents: "open my animation in ${publicHost(origin)}"
+
+Open it on ${publicHost(origin)}. If you have anni's MCP tools, call \`open_animation\` with the file path and send the user the
+link. If you don't, either:
+
+1. **Add the MCP server** (lasting; the tools appear once the client reloads its MCP servers), for example
+   \`claude mcp add anni -- npx -y anni-mcp\` (on native Windows: \`claude mcp add anni -- cmd /c npx -y anni-mcp\`) or
+   \`codex mcp add anni -- npx -y anni-mcp\`.
+2. **Use the HTTP API** (works right away, nothing to install):
+   - \`POST ${origin}/api/sessions\` with JSON \`{ "files": [{ "path": "styles.css", "content": "…" }, { "path": "index.html", "content": "…" }], "file": "styles.css", "preview": "index.html", "animation": "bounce", "auth": true }\` –
+     \`file\` is the stylesheet (or .html with <style>) holding the @keyframes, \`preview\` an optional page that links it, paths relative to the project.
+     The answer has \`url\`, \`session\` and \`token\`: give the user \`<url>#owner=<token>\` (the token makes them the owner, who edits).
+   - \`GET ${origin}/api/sessions/<session>/wait?since=<rev>&timeout=55000\` with the header \`x-anni-owner: <token>\` waits for a save
+     (start with \`since=0\`). When \`saved\` is true, write each of \`files[]\` (\`path\`, \`content\`) back to the project and wait
+     again with the new \`rev\`; when it is false, wait again.
+
+Don't switch to local mode on your own: it is for users who ask to keep their files off the internet.
 
 ## MCP tools
 
