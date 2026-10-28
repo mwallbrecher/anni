@@ -692,6 +692,8 @@ button.primary { color: var(--offwhite); }
 .saves-bars em { font-style: normal; color: var(--text); }
 .saves-track { height: 6px; background: var(--field); }
 .saves-track i { display: block; height: 100%; transition: width 200ms; }
+.home-sec p.pricing-line { margin-top: 16px; font-family: var(--display); font-size: 18px; line-height: 1.4; color: var(--bright); }
+.pricing-heart { color: var(--accent); }
 .bar-without { background: var(--line-2); }
 .bar-with { background: var(--accent); }
 .home .saves-note { margin: 10px 0 0; font-size: 11px; line-height: 1.5; }

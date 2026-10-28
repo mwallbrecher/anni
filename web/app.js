@@ -1040,6 +1040,7 @@ function homeHow() {
         fact('Or not on Cloudflare at all', 'Local mode runs the same editor on ', c('127.0.0.1'), ' – nothing leaves your machine. Or deploy your own instance with ', c('wrangler deploy'), ' and require a token with ', c('ANNI_TOKEN'), '.'),
       ),
     ),
+    h('section', { class: 'pricing home-sec late' }, h('h2', {}, 'Pricing'), h('p', { class: 'pricing-line' }, 'you really thought i would take money for my passion? ', h('span', { class: 'pricing-heart' }, '<3'))),
   ];
 }
 
