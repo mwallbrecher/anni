@@ -1,5 +1,5 @@
 // One editing session: the files an agent handed over, which of them is edited, the live model
-// with unsaved edits, SSE streams to open editor tabs, and agents waiting for the next save.
+// with unsaved edits, WebSockets to open editor tabs, and agents waiting for the next save.
 import { applyModel, describe, kindOf, mergeModel, modelFromText, renderText } from '../src/css.js';
 import { editorAsset, isEditorAsset, versionOf } from './assets.js';
 import { changeMarkdown, changeSummary, cssChanges, lineDiff } from '../src/changes.js';
@@ -67,7 +67,10 @@ export class AnniSession {
   constructor(ctx, env) {
     this.ctx = ctx;
     this.env = env;
-    this.streams = new Map(); // SSE controller of an open tab -> { tab, role }
+    // Open tabs hold hibernatable WebSockets (ctx.getWebSockets(), each with { tab, load, role, isOwner, guestId }
+    // attached): a session whose tabs are just open, nobody editing, isn't running and isn't billed. Their
+    // keep-alive pings are answered without waking it.
+    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
     this.editTab = null; // { tab, seen }: the owner tab that may write (one at a time), and when it last spoke
     this.lastLive = 0;
     this.waiters = new Set(); // agents blocked in wait_for_save
@@ -78,8 +81,13 @@ export class AnniSession {
 
   /** Files are stored one per key (`file:<path>`, text or { b64 }) so a snapshot with fonts fits the per-value limit. */
   async restore() {
-    const m = await this.ctx.storage.get(['meta', 'files:index', 'files', 'closed']);
+    const m = await this.ctx.storage.get(['meta', 'files:index', 'files', 'closed', 'live', 'editTab']);
     this.closedAt = m.get('closed')?.at || null; // the owner closed this session: only this mark is left
+    // Back from hibernation or a restart: the editing tab and its unsaved edits are still known (see storeLive).
+    this.live = m.get('live') || null;
+    this.dirty = !!this.live;
+    const tab = m.get('editTab');
+    if (tab) this.editTab = { ...tab, seen: Date.now() };
     this.meta = m.get('meta') || null; // { kind, file, preview, animation, rev, savedAt } or the schema variant
     this.files = m.get('files') || {}; // legacy single-key layout
     const index = m.get('files:index') || [];
@@ -105,14 +113,25 @@ export class AnniSession {
 
   /** Sends an event to the open tabs, optionally only to those `to(info)` picks ({ tab, role }). */
   broadcast(event, data = {}, to = () => true) {
-    const chunk = new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-    for (const [c, info] of this.streams) {
+    const message = `${event}\n${JSON.stringify(data)}`;
+    for (const [ws, info] of this.sockets()) {
       if (!to(info)) continue;
       try {
-        c.enqueue(chunk);
-      } catch {
-        this.streams.delete(c);
-      }
+        ws.send(message);
+      } catch {} // closing already
+    }
+  }
+
+  /** The open tabs: [socket, { tab, load, role, isOwner, guestId }]. */
+  sockets() {
+    return this.ctx.getWebSockets().map((ws) => [ws, ws.deserializeAttachment() || {}]);
+  }
+
+  disconnectAll() {
+    for (const ws of this.ctx.getWebSockets()) {
+      try {
+        ws.close(1000, 'closed');
+      } catch {}
     }
   }
 
@@ -143,7 +162,33 @@ export class AnniSession {
     // The editing tab sends a heartbeat every 5 s; after 15 s of silence it counts as gone.
     if (!this.editTab || Date.now() - this.editTab.seen > EDIT_TIMEOUT_MS) this.editTab = { tab: who.tab, load: who.load, seen: Date.now() };
     if (this.editTab.tab === who.tab) this.editTab.load = who.load; // a reload of the editing tab goes on editing
+    this.storeEditTab();
     return this.editTab.tab === who.tab;
+  }
+
+  /*
+   * What lives in memory survives hibernation and restarts through storage: which tab edits (written when that
+   * changes) and the unsaved edits (written once the editor pauses, not on every frame). Otherwise a session
+   * evicted while the user is away would forget both, and an agent's change would reload the editor without them.
+   */
+  storeEditTab() {
+    const key = this.editTab ? `${this.editTab.tab} ${this.editTab.load}` : '';
+    if (key === this.storedEditTab) return;
+    this.storedEditTab = key;
+    if (this.editTab) this.ctx.storage.put('editTab', { tab: this.editTab.tab, load: this.editTab.load }).catch(() => {});
+    else this.ctx.storage.delete('editTab').catch(() => {});
+  }
+
+  storeLiveSoon() {
+    clearTimeout(this.liveStoreTimer);
+    this.liveStoreTimer = setTimeout(() => this.storeLive(), 2000);
+  }
+
+  async storeLive() {
+    clearTimeout(this.liveStoreTimer);
+    this.liveStoreTimer = null;
+    if (this.meta && this.dirty && this.live) await this.ctx.storage.put('live', this.live).catch(() => {});
+    else await this.ctx.storage.delete('live');
   }
 
   accessInfo(who) {
@@ -241,12 +286,8 @@ export class AnniSession {
   }
 
   async alarm() {
-    for (const c of this.streams.keys()) {
-      try {
-        c.close();
-      } catch {}
-    }
-    this.streams.clear();
+    await this.ready;
+    this.disconnectAll();
     for (const w of this.waiters) w.resolve(false);
     this.waiters.clear();
     this.meta = null;
@@ -263,12 +304,7 @@ export class AnniSession {
    */
   async closeSession() {
     this.broadcast('closed', {});
-    for (const c of this.streams.keys()) {
-      try {
-        c.close();
-      } catch {}
-    }
-    this.streams.clear();
+    this.disconnectAll();
     for (const w of this.waiters) w.resolve('closed');
     this.waiters.clear();
     this.meta = null;
@@ -300,6 +336,7 @@ export class AnniSession {
     const entries = Object.entries(this.files);
     for (let i = 0; i < entries.length; i += 100) await this.ctx.storage.put(Object.fromEntries(entries.slice(i, i + 100).map(([p, c]) => [`file:${p}`, c])));
     await this.ctx.storage.put({ meta: this.meta, 'files:index': paths });
+    await this.storeLive();
   }
 
   /** Normalises uploaded files: text stays text, base64 uploads become { b64 }; oversize files are skipped and reported. */
@@ -439,7 +476,7 @@ body { display: grid !important; place-items: center !important; background: tra
     this.dirty = false;
     await this.persist();
     this.broadcast('session', { file, animation: this.meta.animation });
-    return { kind: 'css', file, preview, animation: this.meta.animation, animations: model.animations, clients: this.streams.size, rev: this.meta.rev, skipped };
+    return { kind: 'css', file, preview, animation: this.meta.animation, animations: model.animations, clients: this.ctx.getWebSockets().length, rev: this.meta.rev, skipped };
   }
 
   /** A schema session: the agent describes controls (with preview and code wires); anni renders them. */
@@ -466,7 +503,7 @@ body { display: grid !important; place-items: center !important; background: tra
     this.dirty = false;
     await this.persist();
     this.broadcast('session', { title: this.meta.title });
-    return { kind: 'schema', title: this.meta.title, preview, controls: ids.size, clients: this.streams.size, rev: this.meta.rev };
+    return { kind: 'schema', title: this.meta.title, preview, controls: ids.size, clients: this.ctx.getWebSockets().length, rev: this.meta.rev };
   }
 
   /**
@@ -494,7 +531,7 @@ body { display: grid !important; place-items: center !important; background: tra
     this.meta.fv = (this.meta.fv || 0) + 1;
     await this.persist();
     this.broadcast('external-change', { files: changed, conflicts, dirty: this.dirty });
-    return { changed, conflicts, dirty: this.dirty, clients: this.streams.size, skipped };
+    return { changed, conflicts, dirty: this.dirty, clients: this.ctx.getWebSockets().length, skipped };
   }
 
   /** Resolves when the editor saves a revision newer than `since`, or after `timeout` ms. */
@@ -667,7 +704,7 @@ body { display: grid !important; place-items: center !important; background: tra
       }
 
       if (who.role === 'none') return json({ error: 'No access to this session' }, 403);
-      if (route === 'GET /api/events') return this.events(who);
+      if (route === 'GET /api/events') return this.events(who, request);
       if (route === 'POST /api/alive') return json({ editor: this.editorFor(who) }); // the editing tab's heartbeat
       if (route === 'POST /api/bye') {
         this.dropLoad(who.load); // sent by a page that is being closed or reloaded
@@ -737,6 +774,7 @@ body { display: grid !important; place-items: center !important; background: tra
           this.meta.owner.name = cleanName(body.name);
         } else if (url.pathname === '/api/take') {
           this.editTab = { tab: who.tab, load: who.load, seen: Date.now() };
+          this.storeEditTab();
           this.broadcast('access', {}, (s) => s.role === 'owner');
           return json({ ok: true });
         }
@@ -759,6 +797,7 @@ body { display: grid !important; place-items: center !important; background: tra
         if (editor && (fv === undefined || fv === (this.meta.fv || 0))) {
           this.dirty = !!dirty;
           this.live = this.isSchema ? values || null : model;
+          this.storeLiveSoon();
           this.followLive();
         }
         if (this.isSchema) return json({ ok: true }); // the editor applies preview wires itself
@@ -818,19 +857,19 @@ body { display: grid !important; place-items: center !important; background: tra
     }
   }
 
-  /** A page is gone (closed, reloaded, connection lost): forget its streams; if it was editing, another owner tab may take over. */
+  /** A page is gone (closed, reloaded, connection lost): close its socket; if it was editing, another owner tab may take over. */
   dropLoad(load) {
     if (!load) return;
-    for (const [c, info] of this.streams) {
+    for (const [ws, info] of this.sockets()) {
       if (info.load !== load) continue;
-      this.streams.delete(c);
       try {
-        c.close();
+        ws.close(1000, 'gone');
       } catch {}
     }
     // Only if the editing tab hasn't been reloaded meanwhile – its new page load keeps editing.
     if (load === this.editTab?.load) {
       this.editTab = null;
+      this.storeEditTab();
       this.broadcast('access', {}, (s) => s.role === 'owner');
     }
   }
@@ -867,31 +906,30 @@ body { display: grid !important; place-items: center !important; background: tra
     return info.isOwner || this.mode() === 'public' || this.meta?.guests?.[info.guestId]?.status === 'approved';
   }
 
-  events(who) {
-    let controller;
-    let ping;
-    const stream = new ReadableStream({
-      start: (c) => {
-        controller = c;
-        // A deploy restarts this object and drops the stream; the tab reconnects and learns the new version here.
-        c.enqueue(new TextEncoder().encode(`event: version\ndata: ${JSON.stringify({ version: versionOf(this.env) })}\n\n`));
-        this.streams.set(c, { tab: who.tab, load: who.load, role: who.role, isOwner: who.isOwner, guestId: who.guestId });
-        ping = setInterval(() => {
-          try {
-            c.enqueue(new TextEncoder().encode(': ping\n\n'));
-          } catch {
-            clearInterval(ping);
-            this.streams.delete(c);
-            this.dropLoad(who.load);
-          }
-        }, 25000);
-      },
-      cancel: () => {
-        clearInterval(ping);
-        this.streams.delete(controller);
-        this.dropLoad(who.load); // if it was editing, the owner's other tabs re-check and one takes over
-      },
-    });
-    return new Response(stream, { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' } });
+  /** An open tab connects (messages are "event\n<json>"). A deploy restarts this object and drops the socket; the tab reconnects and learns the new version first. */
+  events(who, request) {
+    const version = JSON.stringify({ version: versionOf(this.env) });
+    // A tab from before WebSockets asks with EventSource: tell it the version once, so it reloads into this editor.
+    if (request.headers.get('Upgrade') !== 'websocket') return new Response(`retry: 60000\nevent: version\ndata: ${version}\n\n`, { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' } });
+    const [client, server] = Object.values(new WebSocketPair());
+    this.ctx.acceptWebSocket(server);
+    server.serializeAttachment({ tab: who.tab, load: who.load, role: who.role, isOwner: who.isOwner, guestId: who.guestId });
+    server.send(`version\n${version}`);
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  webSocketMessage() {} // tabs only send pings, and the auto-response answers those
+
+  /** A tab's connection is gone: if it was editing, the owner's other tabs re-check and one takes over. */
+  async webSocketClose(ws) {
+    await this.ready;
+    try {
+      ws.close(1000, 'gone');
+    } catch {}
+    this.dropLoad(ws.deserializeAttachment()?.load);
+  }
+
+  async webSocketError(ws) {
+    return this.webSocketClose(ws);
   }
 }

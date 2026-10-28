@@ -190,7 +190,7 @@ async function load({ keepTime = false } = {}) {
   S.model = data.model;
   S.name = S.model.animations.some((a) => a.name === S.session.animation) ? S.session.animation : S.model.animations[0].name;
   S.saved = S.session.dirty ? '' : snapshot();
-  S.dirty = S.session.dirty;
+  S.dirty = S.session.dirty && S.access?.editor !== false; // a watcher has nothing of its own to save
   S.sel = null;
   S.el = null;
   S.picking = false;
@@ -1550,7 +1550,7 @@ function loadSchema(data) {
   S.model = null;
   S.schema = data.schema;
   S.values = { ...data.values };
-  S.dirty = S.session.dirty;
+  S.dirty = S.session.dirty && S.access?.editor !== false; // a watcher has nothing of its own to save
   S.savedValues = S.dirty ? null : { ...S.values };
   S.vhistory = [];
   S.vfuture = [];
@@ -4794,11 +4794,66 @@ if (BUILD) {
 }
 
 let events;
+
+/**
+ * A hosted session talks over a WebSocket it can hibernate on: while nobody edits, an open tab costs nothing.
+ * Same interface as EventSource – addEventListener(type, fn) with fn({ data }), close() – for messages
+ * "type\n<json>"; it reconnects by itself (then fires `reconnect`). A ping every 30 s keeps the connection
+ * open; the session answers it without waking up.
+ */
+function socketEvents(path) {
+  const handlers = new Map();
+  const fire = (type, data = '') => (handlers.get(type) || []).forEach((fn) => fn({ data }));
+  const url = new URL(path, location.href);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  let ws;
+  let ping;
+  let retry = 1000;
+  let opened = false;
+  let closed = false;
+  const connect = () => {
+    ws = new WebSocket(url);
+    ws.onopen = () => {
+      retry = 1000;
+      if (opened) fire('reconnect');
+      opened = true;
+    };
+    ws.onmessage = (e) => {
+      if (e.data === 'pong') return;
+      const i = e.data.indexOf('\n');
+      fire(i < 0 ? e.data : e.data.slice(0, i), i < 0 ? '' : e.data.slice(i + 1));
+    };
+    ws.onclose = () => {
+      clearInterval(ping);
+      if (closed) return;
+      setTimeout(connect, retry);
+      retry = Math.min(retry * 2, 30000);
+    };
+    ping = setInterval(() => ws.readyState === WebSocket.OPEN && ws.send('ping'), 30000);
+  };
+  connect();
+  return {
+    addEventListener: (type, fn) => handlers.set(type, [...(handlers.get(type) || []), fn]),
+    close: () => {
+      closed = true;
+      clearInterval(ping);
+      ws.close();
+    },
+  };
+}
+
 /** Server events (agent opened something, file changed on disk). The hosted root page has no session to follow. */
 function listen() {
   if (events) return;
-  events = new EventSource(`${BASE}/api/events?tab=${TAB}&load=${LOAD}`); // EventSource can't send headers
+  const path = `${BASE}/api/events?tab=${TAB}&load=${LOAD}`; // neither EventSource nor WebSocket can send headers
+  events = S.session?.hosted ? socketEvents(path) : new EventSource(path);
   events.addEventListener('version', (e) => checkVersion(JSON.parse(e.data).version));
+  // Back after a dropped connection: catch up on what was missed meanwhile; the editing tab hands its state over again.
+  events.addEventListener('reconnect', () => {
+    refreshAccess().catch(() => {});
+    if (S.readonly) followLiveState({}).catch(() => {});
+    else if (S.model || S.schema) push();
+  });
   events.addEventListener('access', () => refreshAccess().catch(() => {}));
   events.addEventListener('live', (e) => followLiveState(JSON.parse(e.data || '{}')).catch(() => {}));
   events.addEventListener('closed', () => showLock({ closed: true })); // the owner closed the session
