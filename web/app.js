@@ -4119,7 +4119,9 @@ function renderTimeline() {
   const groups = sceneGroups();
   S.groups = groups;
   S.groupsKey = groupsKey(groups);
-  const D = (S.sceneDur = Math.max(1, S.sceneLen || 0, ...groups.map(sceneEnd)));
+  // The timeline keeps its length: it grows to fit what's on it, but only the length box makes it shorter –
+  // dragging the last keyframe in shortens that animation, not the timeline.
+  const D = (S.sceneDur = S.sceneLen = Math.max(1, S.sceneLen || 0, ...groups.map(sceneEnd)));
   const start = viewStart();
   const span = viewSpan();
   const step = niceStep(span);
