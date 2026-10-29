@@ -281,7 +281,7 @@ function renderHome(mcpUrl, { tokenRequired = false } = {}) {
       chat,
     ),
   );
-  card.replaceChildren(head, demo, homeInstall(installCommands(mcpUrl), tokenRequired, publicHost(mcpUrl)), ...homeHow());
+  card.replaceChildren(head, demo, homeInstall(installCommands(mcpUrl), tokenRequired, publicHost(mcpUrl)), h('div', { class: 'home-metrics late' }, homeMetrics()), ...homeHow());
   for (const sec of card.querySelectorAll('.home-sec')) collapsible(sec);
   homeNav(card);
   bootHome(head, typed, demo, chat);
@@ -779,7 +779,7 @@ function homeChat(demo) {
       if (i < suggested.length) home.timers.push((typing = setTimeout(key, 30 + Math.random() * 40)));
       else typed();
     };
-    home.timers.push((typing = setTimeout(key, 1000))); // a beat after the terminal is there
+    home.timers.push((typing = setTimeout(key, 2000))); // a while after the terminal is there
   };
 
   // The session opens in a new tab; this page stays as it is, ready to open another. The tab is opened right away
@@ -1000,7 +1000,7 @@ function homeSaves() {
   );
 }
 
-/** The sections after Setup: the key points, what it saves, the pipeline with its steps, where the files live. */
+/** The sections after Setup and its key points: what it saves, the pipeline with its steps, where the files live, pricing. */
 function homeHow() {
   const c = (s) => h('code', {}, s);
   const step = (n, title, ...body) => h('li', { class: 'how-fact' }, h('h3', {}, h('span', { class: 'how-n' }, n), title), h('p', {}, ...body));
@@ -1008,7 +1008,6 @@ function homeHow() {
   const edge = (via, what) => h('div', { class: 'flow-edge' }, h('span', {}, via), h('span', {}, what));
   const fact = (title, ...body) => h('div', { class: 'how-fact' }, h('h3', {}, title), h('p', {}, ...body));
   return [
-    h('section', { class: 'how home-sec late' }, h('h2', {}, 'What about it'), homeMetrics()),
     homeSaves(),
     h(
       'section',
