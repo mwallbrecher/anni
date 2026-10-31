@@ -37,13 +37,14 @@ const S = {
   history: [],
   future: [],
   pendingCommit: false,
-  picking: false, // pick mode: hovering/clicking elements in the page preview
+  picking: true, // pick mode (the default): clicks in the page preview select elements; off = view mode, the page is live
   hoverEl: null,
   el: null, // picked element: { selector, candidates, tag, names }
   view: { span: null, start: 0 }, // visible window of the timeline (ms); span null = whole scene
   zoom: { z: 1, x: 0, y: 0 }, // visual zoom of the preview: scale + translation in px
   mode2: 'animate', // 'editor' (styles of the picked element) | 'animate' (timeline), Rive-style
-  editorChanges: new Map(), // control id -> { control, value }: declaration edits not yet saved
+  editorChanges: new Map(), // control id -> { control, value }: declaration and text edits not yet saved
+  textControls: new Map(), // control id -> text control: each text of the page the Editor has shown, with its original value
   ehistory: [],
   efuture: [],
   fileTexts: {}, // uploaded file path -> text, fetched on demand for code wires
@@ -180,6 +181,7 @@ async function load({ keepTime = false } = {}) {
   }
   S.schema = null;
   S.editorChanges = new Map();
+  S.textControls = new Map();
   S.ehistory = [];
   S.efuture = [];
   S.fileTexts = {};
@@ -193,7 +195,6 @@ async function load({ keepTime = false } = {}) {
   S.dirty = S.session.dirty && S.access?.editor !== false; // a watcher has nothing of its own to save
   S.sel = null;
   S.el = null;
-  S.picking = false;
   S.history = [];
   S.future = [];
   if (!keepTime) {
@@ -1764,8 +1765,8 @@ function loadPreview() {
 }
 
 frame.addEventListener('load', () => {
+  S.checkAfterPush = true;
   push();
-  setTimeout(checkPreview, 600);
 });
 
 /**
@@ -1839,6 +1840,8 @@ function checkPreview() {
   if (S.mode !== 'page') return;
   const found = previewAnimations().length;
   $('#stage-info').textContent = found ? `${found} element${found > 1 ? 's' : ''} running “${S.name}”` : '';
+  if (found && S.noElementBanner) banner(null);
+  S.noElementBanner = !found;
   if (!found) {
     banner([
       h('span', {}, `No element on the page is running “${S.name}” right now (maybe only on :hover or via script).`),
@@ -1850,19 +1853,19 @@ function checkPreview() {
 function setMode(mode) {
   if (mode === S.mode) return;
   S.mode = mode;
-  S.picking = false;
   banner(null);
   loadPreview();
 }
 
 /** Switches the edited animation (header dropdown, element section, timeline groups). The scene clock stays put. */
 function setAnimation(name) {
+  if (loose()) S.el = null; // the user moved on to an animation of another element
   S.name = name;
   S.sel = null;
   api('POST', '/api/select', { animation: name });
   renderAll();
+  S.checkAfterPush = S.mode === 'page';
   push();
-  if (S.mode === 'page') setTimeout(checkPreview, 300);
 }
 
 /* ---------- live preview ---------- */
@@ -1877,10 +1880,27 @@ function push() {
 /** Renders the model on the server and swaps the result into the preview; resolves once the preview is current. */
 async function pushNow() {
   const seq = ++pushSeq;
-  const { css } = await api('POST', '/api/render', { model: S.model, dirty: S.dirty, fv: S.session.fv });
+  let css;
+  try {
+    ({ css } = await api('POST', '/api/render', { model: S.model, dirty: S.dirty, fv: S.session.fv }));
+  } catch (e) {
+    if (seq !== pushSeq) return;
+    S.renderFailed = true;
+    banner(h('span', {}, `The preview can’t be updated – anni didn’t answer (${e.message}). Your edits stay in this tab, and the preview catches up with your next edit once anni answers again.`));
+    return;
+  }
   if (seq !== pushSeq) return;
+  if (S.renderFailed) {
+    S.renderFailed = false;
+    banner(null);
+  }
   S.css = css;
   applyCss();
+  // "Is anything running it?" is only answerable once the new CSS is in the page.
+  if (S.checkAfterPush) {
+    S.checkAfterPush = false;
+    requestAnimationFrame(checkPreview);
+  }
 }
 
 function shorthand(a) {
@@ -1959,18 +1979,19 @@ function winningDeclarations(el) {
   const doc = el.ownerDocument;
   const win = doc.defaultView;
   const found = new Map(); // prop -> { value, selector, file, important, score, order }
+  found.home = null; // the most specific top-level rule from an uploaded file: where new declarations go
   let order = 0;
-  const visit = (rules, file) => {
+  const visit = (rules, file, nested = false) => {
     for (const rule of rules) {
       if (!(rule instanceof win.CSSStyleRule)) {
         // Grouping rules (@media, @supports, @layer): descend when they apply; never into @keyframes.
         if (rule instanceof win.CSSKeyframesRule || !rule.cssRules) continue;
         if (rule.media && !win.matchMedia(rule.media.mediaText).matches) continue;
         if (rule instanceof win.CSSSupportsRule && !win.CSS.supports(rule.conditionText)) continue;
-        visit(rule.cssRules, file);
+        visit(rule.cssRules, file, true);
         continue;
       }
-      if (rule.cssRules?.length) visit(rule.cssRules, file); // CSS nesting
+      if (rule.cssRules?.length) visit(rule.cssRules, file, true); // CSS nesting
       const parts = rule.selectorText.split(',').map((s) => s.trim());
       let best = -1;
       for (const part of parts) {
@@ -1981,6 +2002,7 @@ function winningDeclarations(el) {
       }
       if (best < 0) continue;
       order++;
+      if (file && !nested && best >= (found.home?.best ?? -1)) found.home = { selector: rule.selectorText, file, best };
       // cssText serialises back to the authored shorthands (padding: 8px 16px), which is what the source file holds.
       for (const decl of splitTop(rule.style.cssText, ';')) {
         const i = decl.indexOf(':');
@@ -2024,7 +2046,118 @@ function editorSchemaFor(el) {
     const gi = EDITOR_GROUPS.findIndex(([, re]) => re.test(prop));
     (gi >= 0 ? groups[gi] : other).controls.push(c);
   }
-  return { title: S.el?.tag || 'Element', groups: [...groups, other].filter((g) => g.controls.length) };
+  // Declarations anni adds (alignment) aren't in the CSSOM until saved: list them with the rest.
+  for (const { control: c } of S.editorChanges.values()) {
+    if (!c.added || decls.has(c.prop) || !el.matches(c.selector)) continue;
+    const gi = EDITOR_GROUPS.findIndex(([, re]) => re.test(c.prop));
+    (gi >= 0 ? groups[gi] : other).controls.push(c);
+  }
+  return { title: S.el?.tag || 'Element', groups: [...groups, other].filter((g) => g.controls.length), decls };
+}
+
+/** A declaration the element doesn't have yet, for its most specific rule in an uploaded file (or a new rule). */
+function addedControl(el, prop, decls) {
+  const home = decls.home;
+  const selector = home?.selector || S.el.selector;
+  const file = home?.file || (S.session.kind === 'css' ? S.session.file : null);
+  return { id: `add|${selector}|${prop}`, label: prop, value: '', selector, prop, file, added: true, sourceHint: file?.split('/').pop(), type: 'text', preview: { css: { selector, prop } } };
+}
+
+/** The page's HTML file, where an element's text lives – null for a snapshot of a running app (the text is in its source). */
+function pageFile() {
+  const p = frame.contentDocument?.location?.pathname || '';
+  const i = p.indexOf('/site/');
+  const file = i >= 0 ? decodeURIComponent(p.slice(i + 6)) : null;
+  return file && /\.html?$/i.test(file) && !/(^|\/)\.anni\//.test(file) ? file : null;
+}
+
+/** One control per text of the element itself (not of its children). Kept once made: the page shows the edit, not the original. */
+function textControlsFor(el) {
+  const path = uniquePath(el);
+  if (!path || /^(script|style|textarea)$/i.test(el.tagName)) return [];
+  const out = [];
+  el.childNodes.forEach((n, index) => {
+    if (n.nodeType !== 3 || !n.nodeValue.trim()) return;
+    const id = `text|${path}|${index}`;
+    if (!S.textControls.has(id)) {
+      const [, lead, value, trail] = n.nodeValue.match(/^(\s*)([\s\S]*?)(\s*)$/);
+      S.textControls.set(id, { id, kind: 'text', type: 'text', label: 'text', value, lead, trail, path, index, tag: el.tagName.toLowerCase(), file: pageFile() });
+    }
+    out.push(S.textControls.get(id));
+  });
+  return out;
+}
+
+const ALIGN = ['left', 'center', 'right'];
+
+/** Where the element sits in its parent, from the space it leaves on either side; null when it fills the parent. */
+function alignInParent(el) {
+  const p = el.parentElement;
+  const ps = getComputedStyle(p);
+  const r = el.getBoundingClientRect();
+  const pr = p.getBoundingClientRect();
+  const left = r.left - pr.left - parseFloat(ps.borderLeftWidth) - parseFloat(ps.paddingLeft);
+  const right = pr.right - r.right - parseFloat(ps.borderRightWidth) - parseFloat(ps.paddingRight);
+  if (left < 1 && right < 1) return null;
+  if (Math.abs(left - right) < 1) return 'center';
+  return left < right ? 'left' : 'right';
+}
+
+/** The declarations that put the element left / center / right in its parent – which ones depends on the parent's layout. */
+function alignDecls(el, to, decls) {
+  const ps = getComputedStyle(el.parentElement);
+  const i = ALIGN.indexOf(to);
+  if (/flex/.test(ps.display) && ps.flexDirection.startsWith('column')) return { 'align-self': ['flex-start', 'center', 'flex-end'][i] };
+  if (/grid/.test(ps.display)) return { 'justify-self': ['start', 'center', 'end'][i] };
+  const out = { 'margin-inline': ['0 auto', 'auto', 'auto 0'][i] };
+  if (/flex/.test(ps.display)) return out;
+  // Auto margins only move blocks: an inline-level element (button, link, image) gets its own line first.
+  const display = getComputedStyle(el).display;
+  if (display.startsWith('inline')) out.display = { inline: 'block', 'inline-block': 'block', 'inline-flex': 'flex', 'inline-grid': 'grid', 'inline-table': 'table' }[display] || 'block';
+  // A block fills its parent, so auto margins have no space to share: it shrinks to its content first.
+  if (!decls.has('width') && !decls.has('max-width')) out.width = 'fit-content';
+  return out;
+}
+
+/** Sets several declarations as one undo step: an existing winning declaration is changed, a missing one added. */
+function setDeclarations(el, schema, values) {
+  if (S.readonly) return;
+  commitEditor();
+  const all = schema.groups.flatMap((g) => g.controls);
+  for (const [prop, value] of Object.entries(values)) {
+    const c = all.find((x) => x.prop === prop) || addedControl(el, prop, schema.decls);
+    if (!c.added && sameValue(value, c.value)) S.editorChanges.delete(c.id);
+    else S.editorChanges.set(c.id, { control: c, value });
+  }
+  afterEditorChange();
+  renderInspector();
+}
+
+const ALIGN_ICONS = {
+  text: { left: 'M2 3.5h10M2 7h6M2 10.5h8', center: 'M2 3.5h10M4 7h6M3 10.5h8', right: 'M2 3.5h10M6 7h6M4 10.5h8' },
+  box: { left: 'M1.5 1.5v11', center: 'M7 1.5v11', right: 'M12.5 1.5v11' },
+};
+function alignIcon(kind, a) {
+  const rect = kind === 'box' ? `<rect x="${{ left: 3.5, center: 4, right: 4.5 }[a]}" y="4.5" width="6" height="5" rx="1"/>` : '';
+  const s = h('span', { class: 'ico' });
+  s.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"><path d="${ALIGN_ICONS[kind][a]}"/>${rect}</svg>`;
+  return s;
+}
+
+/** The Align section: text inside the element, and the element inside its parent. */
+function renderAlignSection(el, schema) {
+  const cs = getComputedStyle(el);
+  const rows = [];
+  const row = (label, kind, cur, pick) =>
+    h('div', { class: 'prop' }, h('span', { class: 'name' }, label), h('div', { class: 'seg align' }, ALIGN.map((a) => h('button', { class: a === cur ? 'on' : '', title: `${label}: ${a}`, onclick: () => pick(a) }, alignIcon(kind, a)))), h('span'));
+  if (el.textContent.trim() && !/^(inline|contents|none)$/.test(cs.display)) {
+    const cur = { start: 'left', left: 'left', center: 'center', end: 'right', right: 'right' }[cs.textAlign] || null;
+    rows.push(row('text', 'text', cur, (a) => setDeclarations(el, schema, { 'text-align': a })));
+  }
+  if (el.parentElement && el.parentElement !== el.ownerDocument.documentElement && /^(inline-)?(block|flex|grid|table)$|^(inline|list-item|flow-root)$/.test(cs.display) && !/absolute|fixed/.test(cs.position)) {
+    rows.push(row('in parent', 'box', alignInParent(el), (a) => setDeclarations(el, schema, alignDecls(el, a, schema.decls))));
+  }
+  return rows.length ? h('div', { class: 'section props' }, h('h2', {}, 'Align'), h('div', { class: 'rows' }, rows)) : null;
 }
 
 function controlFor(prop, value) {
@@ -2084,7 +2217,16 @@ function redoEditor() {
 function applyEditorPreview() {
   const doc = frame.contentDocument;
   if (!doc?.head || S.schema) return;
-  const css = [...S.editorChanges.values()].map(({ control: c, value }) => `${c.preview.css.selector} { ${c.prop}: ${value}${c.preview.css.important ? ' !important' : ''}; }`).join('\n');
+  // Edited texts: written into the page's own text nodes (and back to the original on undo).
+  for (const c of S.textControls.values()) {
+    let node = null;
+    try {
+      node = doc.querySelector(c.path)?.childNodes[c.index];
+    } catch {}
+    const text = c.lead + editorValue(c) + c.trail;
+    if (node?.nodeType === 3 && node.nodeValue !== text) node.nodeValue = text;
+  }
+  const css = [...S.editorChanges.values()].filter(({ control: c }) => c.prop).map(({ control: c, value }) => `${c.preview.css.selector} { ${c.prop}: ${value}${c.preview.css.important ? ' !important' : ''}; }`).join('\n');
   let style = doc.getElementById('anni-editor');
   if (!style && !css) return;
   if (!style) {
@@ -2128,6 +2270,61 @@ function findSnippet(text, selector, prop, value) {
   return null;
 }
 
+const escHtml = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/ /g, '&nbsp;');
+
+/** Code wire for an edited text: the string in the page's HTML, from the tag before it, grown upwards until unique. */
+function findText(text, from, to, tag) {
+  for (const needle of new Set([from, escHtml(from)])) {
+    let hits = [];
+    for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + 1)) hits.push(at);
+    if (hits.length > 1) hits = hits.filter((at) => text.slice(text.lastIndexOf('<', at), at).toLowerCase().startsWith(`<${tag}`));
+    if (hits.length !== 1) continue;
+    const at = hits[0];
+    let start = Math.max(0, text.lastIndexOf('<', at));
+    for (let lines = 0; lines < 8; lines++) {
+      const find = text.slice(start, at + needle.length);
+      if (text.split(find).length - 1 === 1) return { find, replace: text.slice(start, at) + escHtml(to) };
+      if (start === 0) break;
+      start = text.lastIndexOf('\n', start - 2) + 1;
+    }
+  }
+  return null;
+}
+
+/**
+ * Code wire for new declarations: the whole rule with `selector`, with them added before its closing brace (after
+ * everything already there, so they win). A rule at the top level is preferred over copies inside @media.
+ */
+function findInsert(text, selector, decls) {
+  const hits = [];
+  for (let open = text.indexOf('{'); open >= 0; open = text.indexOf('{', open + 1)) {
+    const from = Math.max(text.lastIndexOf('}', open), text.lastIndexOf('{', open - 1), text.lastIndexOf(';', open)) + 1;
+    if (normSel(text.slice(from, open).replace(/\/\*[\s\S]*?\*\//g, '')) === normSel(selector)) hits.push({ from, open });
+  }
+  const depth = (i) => text.slice(0, i).split('{').length - text.slice(0, i).split('}').length;
+  const hit = hits.length === 1 ? hits[0] : hits.filter((x) => depth(x.from) === 0).length === 1 ? hits.find((x) => depth(x.from) === 0) : null;
+  if (!hit) return null;
+  let close = -1;
+  for (let i = hit.open, d = 0; i < text.length; i++) {
+    if (text[i] === '{') d++;
+    else if (text[i] === '}' && --d === 0) {
+      close = i;
+      break;
+    }
+  }
+  if (close < 0) return null;
+  const start = hit.from + (text.slice(hit.from, hit.open).match(/^\s*/)[0].length);
+  const body = text.slice(hit.open + 1, close);
+  let end = close;
+  while (end > hit.open + 1 && /\s/.test(text[end - 1])) end--;
+  const semi = /[;{]/.test(text[end - 1]) ? '' : ';';
+  const indent = body.match(/\n([ \t]+)\S/)?.[1] || '  ';
+  const add = decls.map(([p, v]) => (body.includes('\n') ? `\n${indent}${p}: ${v};` : ` ${p}: ${v};`)).join('');
+  const find = text.slice(start, close + 1);
+  if (text.split(find).length - 1 !== 1) return null;
+  return { find, replace: text.slice(start, end) + semi + add + text.slice(end, close + 1) };
+}
+
 async function fileText(p) {
   if (!(p in S.fileTexts)) S.fileTexts[p] = await (await fetch(`${BASE}/site/${p.split('/').map(encodeURIComponent).join('/')}`)).text();
   return S.fileTexts[p];
@@ -2136,17 +2333,42 @@ async function fileText(p) {
 /** The pending declaration edits with their code wires, for /api/save. */
 async function pendingEdits() {
   const edits = [];
+  const adds = new Map(); // file|selector -> added declarations: one edit per rule, as they all insert at its end
   for (const { control: c, value } of S.editorChanges.values()) {
+    if (c.added) {
+      const k = `${c.file}|${c.selector}`;
+      if (!adds.has(k)) adds.set(k, { file: c.file, selector: c.selector, decls: [] });
+      adds.get(k).decls.push([c.prop, value]);
+      continue;
+    }
     let source = null;
     if (c.file) {
       try {
-        const wire = findSnippet(await fileText(c.file), c.selector, c.prop, c.value);
+        const text = await fileText(c.file);
+        const wire = c.kind === 'text' ? findText(text, c.value, value, c.tag) : findSnippet(text, c.selector, c.prop, c.value);
         if (wire) source = { file: c.file, ...wire };
       } catch {}
     }
-    edits.push({ id: c.id, label: `${c.selector || 'inline'} ${c.prop}`, type: c.type, from: c.value, to: value, source });
+    const label = c.kind === 'text' ? `text of ${c.path}` : `${c.selector || 'inline'} ${c.prop}`;
+    edits.push({ id: c.id, label, type: c.type, from: c.value, to: value, source });
   }
-  return edits;
+  // New declarations are applied first: they rewrite a whole rule, and the snippets of the edits above end before its brace.
+  const inserts = [];
+  for (const a of adds.values()) {
+    let source = null;
+    if (a.file) {
+      try {
+        const text = await fileText(a.file);
+        const wire = findInsert(text, a.selector, a.decls);
+        // Rule not found once: a new rule at the end of the file, which wins over the old one.
+        const rule = `${text.endsWith('\n') ? '' : '\n'}\n${a.selector} {\n${a.decls.map(([p, v]) => `  ${p}: ${v};\n`).join('')}}\n`;
+        source = { file: a.file, ...(wire || { range: [text.length, text.length], template: rule }) };
+      } catch {}
+    }
+    inserts.push({ id: `add|${a.selector}`, label: `${a.selector} (new)`, type: 'text', from: '', to: a.decls.map(([p, v]) => `${p}: ${v};`).join(' '), source });
+  }
+  // Appends (a range at the old end) go before anything that changes a file's length.
+  return [...inserts.filter((e) => e.source?.range), ...inserts.filter((e) => !e.source?.range), ...edits];
 }
 
 function renderEditorView() {
@@ -2164,6 +2386,31 @@ function renderEditorView() {
     return;
   }
   const schema = editorSchemaFor(el);
+  const texts = textControlsFor(el);
+  if (texts.length) {
+    parts.push(
+      h(
+        'div',
+        { class: 'section props' },
+        h('h2', {}, 'Content'),
+        h(
+          'div',
+          { class: 'rows' },
+          texts.map((c) =>
+            h(
+              'div',
+              { class: `prop wide${S.editorChanges.has(c.id) ? ' changed' : ''}`, 'data-id': c.id },
+              h('span', { class: 'name', title: `Text of ${c.path}` }, texts.length > 1 ? `text ${texts.indexOf(c) + 1}` : 'text'),
+              controlEditor(c, editorValue(c), (v) => setEditorValue(c, v)),
+              h('span', { class: 'key dot', title: S.editorChanges.has(c.id) ? 'Changed since the last save' : 'Unchanged' }),
+              h('span', { class: 'wire' }, c.file ? `→ ${c.file.split('/').pop()}` : 'not in an uploaded HTML file · handed to the agent'),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+  parts.push(renderAlignSection(el, schema));
   for (const g of schema.groups) {
     parts.push(
       h(
@@ -2188,7 +2435,7 @@ function renderEditorView() {
       ),
     );
   }
-  inspector.replaceChildren(...parts);
+  inspector.replaceChildren(...parts.filter(Boolean));
 }
 
 function setView(view) {
@@ -2359,6 +2606,7 @@ function setPicks(list) {
 
 /** Selects a keyframe; seeks the playhead to it (page time of the edited animation, or `at` ms). */
 function select(bi, oi, { seek = true, at } = {}) {
+  if (bi !== null && loose()) S.el = null; // a keyframe of another element's animation: that element is edited now
   S.sel = bi === null ? null : { bi, oi };
   S.picks = S.sel ? [{ name: S.name, bi, oi }] : [];
   if (S.sel && seek) S.t = at ?? delayOf() + (anim().keyframes[bi].offsets[oi] / 100) * dur();
@@ -2405,7 +2653,7 @@ function targetEl() {
   const doc = frame.contentDocument;
   if (!doc) return null;
   if (S.mode === 'demo') return doc.getElementById('anni-demo');
-  const x = previewAnimations()[0];
+  const x = loose() ? null : previewAnimations()[0];
   if (x?.effect?.target) return x.effect.target;
   try {
     return S.el ? doc.querySelector(S.el.selector) : null;
@@ -2424,7 +2672,7 @@ const isAnimated = (a, prop) => a.keyframes.some((b) => b.decls.some((d) => d.pr
 function valueAt(prop, at = blockAtPlayhead()) {
   const keyed = at?.block.decls.find((d) => d.prop === prop);
   if (keyed) return keyed.value;
-  const a = anim();
+  const a = editAnim();
   const animated = isAnimated(a, prop);
   if (prop === 'transform' && animated) return valueNear(a, prop, playheadPct()); // computed would be a matrix()
   const el = targetEl();
@@ -2498,8 +2746,34 @@ function unkey(prop) {
   });
 }
 
+/** The picked element runs no animation of this file: the panel shows its values, and the first edit creates one for it. */
+const loose = () => !!S.el && !!S.model && !S.schema && S.mode === 'page' && !S.el.names.some((n) => animBy(n));
+const NO_ANIM = { name: '', keyframes: [], timing: NEW_TIMING };
+/** The animation the property panel edits: none yet while a loose element is picked. */
+const editAnim = () => (loose() ? NO_ANIM : anim());
+
+/**
+ * First edit on a loose element: creates `<name>-anim` for it and makes it the edited animation. `rerender: false`
+ * keeps the panel in place mid-gesture (a slider being dragged must survive); it is redrawn when the gesture ends.
+ */
+function adoptElement({ rerender = true } = {}) {
+  if (S.readonly) return;
+  const name = suggestName(S.el);
+  createAnimation(name, S.el.selector, { open: false });
+  S.name = name;
+  S.sel = null;
+  api('POST', '/api/select', { animation: name });
+  S.checkAfterPush = true;
+  push();
+  toast(`@keyframes ${name} created for ${S.el.selector}`);
+  if (rerender) return renderAll();
+  renderHeader();
+  renderTimeline();
+  S.inspectorStale = true;
+}
+
 /** New @keyframes for the picked element; written to the file on save (see createAnimation in css.js). */
-function createAnimation(name, selector) {
+function createAnimation(name, selector, { open = true } = {}) {
   if (!/^-?[a-zA-Z_][\w-]*$/.test(name)) return toast('Invalid animation name');
   if (!selector) return toast('Selector missing');
   if (S.model.animations.some((a) => a.name === name)) return toast(`“${name}” already exists`);
@@ -2513,9 +2787,11 @@ function createAnimation(name, selector) {
       timing: { ...NEW_TIMING },
       usage: { selector, kind: 'shorthand', create: true },
     }),
+    { render: open ? 'all' : 'light' },
   );
   if (S.el) S.el.names = [...S.el.names, name];
   S.addOpen = false;
+  if (!open) return;
   setAnimation(name);
   toast(`@keyframes ${name} created – change a value to key it`);
 }
@@ -2776,6 +3052,7 @@ async function saveModel() {
     S.dirty = false;
     if (edits.length) {
       S.editorChanges = new Map();
+      S.textControls = new Map(); // the page shows the saved texts now: they are the new originals
       S.fileTexts = {};
       const manual = r.manual?.length ? ` · ${r.manual.length} could not be placed (handed to the agent)` : '';
       toast(`Saved – ${r.applied?.length || 0} style edit${r.applied?.length === 1 ? '' : 's'} written${manual}`);
@@ -2838,7 +3115,7 @@ function renderStageBar() {
   const pick = $('#pick');
   pick.hidden = S.mode !== 'page';
   pick.classList.toggle('on', S.picking);
-  $('#stage-info').textContent = S.mode === 'demo' ? 'Animation on a test box' : S.picking ? 'Click an element on the page · Esc cancels' : '';
+  $('#stage-info').textContent = S.mode === 'demo' ? 'Animation on a test box' : S.picking ? 'Click an element to select it · V for view mode' : 'View mode – the page reacts to clicks as usual · V to pick';
 }
 
 /* ---------- element picking (page preview) ---------- */
@@ -2852,7 +3129,7 @@ const OVERLAY_CSS = `
 #anni-ov .tag { position: absolute; left: 0; bottom: 100%; margin-bottom: 2px; padding: 1px 5px; border-radius: 0;
   background: #e97130; color: #fafaf9; font: 500 10px/1.5 Inter, system-ui, sans-serif; white-space: nowrap;
   transform: scale(calc(1 / var(--anni-z, 1))); transform-origin: 0 100%; }
-html.anni-pick, html.anni-pick * { cursor: crosshair !important; }
+html.anni-pick, html.anni-pick * { cursor: default !important; }
 .anni-hidden { visibility: hidden !important; }`;
 
 /** Overlay layer inside the preview document, installed once per page load. */
@@ -2878,11 +3155,10 @@ function overlay() {
         e.stopPropagation();
         const el = pickTarget(e);
         if (el) selectElement(el);
-        setPicking(false);
       },
       true,
     );
-    doc.addEventListener('keydown', (e) => e.key === 'Escape' && setPicking(false));
+    doc.addEventListener('keydown', (e) => e.key === 'Escape' && clearElement());
     doc.addEventListener('wheel', onPreviewWheel, { passive: false, capture: true });
     doc.documentElement.classList.toggle('anni-pick', S.picking);
     drawOverlay.key = '';
@@ -2928,6 +3204,11 @@ function pickTarget(e) {
   const doc = frame.contentDocument;
   const el = doc.elementFromPoint(e.clientX, e.clientY);
   return !el || el === doc.documentElement || el === doc.body || el.closest('#anni-ov') ? null : el;
+}
+
+function clearElement() {
+  S.el = null;
+  renderInspector();
 }
 
 function setPicking(on) {
@@ -3078,7 +3359,7 @@ function renderElementSection() {
   return h(
     'div',
     { class: 'section element' },
-    h('h2', {}, 'Element', h('span', { class: 'spacer' }), h('button', { class: 'ghost', title: 'Clear selection', onclick: () => ((S.el = null), renderInspector()) }, '×')),
+    h('h2', {}, 'Element', h('span', { class: 'spacer' }), h('button', { class: 'ghost', title: 'Clear selection (Esc)', onclick: clearElement }, '×')),
     h('p', { class: 'el-tag' }, h('code', {}, el.tag)),
     field('Selector', h('div', {}, selInput, hits)),
     h('datalist', { id: 'sel-list' }, el.candidates.map((c) => h('option', { value: c }))),
@@ -3263,6 +3544,10 @@ function renderInspector() {
     timingSourceNote(a),
   );
 
+  if (loose()) {
+    const note = h('p', { class: 'note' }, 'Change a value or add a keyframe at the playhead – anni creates ', h('code', {}, `@keyframes ${suggestName(S.el)}`), ' for it.');
+    return inspector.replaceChildren(renderElementSection(), h('div', { class: 'section' }, note), renderPropsPanel());
+  }
   inspector.replaceChildren(...(S.el ? [renderElementSection()] : []), timing, renderPropsPanel(), renderKeyframeSection(a));
 }
 
@@ -3284,8 +3569,8 @@ const panelKey = (a, at) =>
   `#${playheadPct()}`;
 
 function renderPropsPanel() {
-  const a = anim();
-  const at = blockAtPlayhead();
+  const a = editAnim();
+  const at = loose() ? null : blockAtPlayhead();
   const rows = [];
   for (const [group, props] of PANEL) rows.push(h('div', { class: 'group' }, group), ...props.map((p) => propRow(p, at)));
   const extras = panelExtras(a);
@@ -3301,7 +3586,7 @@ function renderPropsPanel() {
   const panel = h(
     'div',
     { class: 'section props', id: 'props' },
-    h('h2', {}, 'Properties', h('span', { class: 'spacer' }), h('span', { class: playheadInRange() ? 'muted' : 'warn-text', title: playheadInRange() ? '' : 'The playhead is outside this animation – keys land at its nearest end.' }, `${a.name} at ${fmtPct(playheadPct())}${playheadInRange() ? '' : ' ⚠'}`)),
+    h('h2', {}, 'Properties', h('span', { class: 'spacer' }), loose() ? h('span', { class: 'muted' }, `${S.el.tag} · not animated`) : h('span', { class: playheadInRange() ? 'muted' : 'warn-text', title: playheadInRange() ? '' : 'The playhead is outside this animation – keys land at its nearest end.' }, `${a.name} at ${fmtPct(playheadPct())}${playheadInRange() ? '' : ' ⚠'}`)),
     h('div', { class: 'rows' }, rows),
     h('div', { class: 'row custom' }, custom, h('button', { onclick: addCustom }, '+')),
   );
@@ -3312,8 +3597,13 @@ function renderPropsPanel() {
 /** Re-renders the panel when the playhead moved – unless the user is typing or dragging in it. */
 function refreshPanel() {
   const panel = $('#props');
-  if (!panel || !S.model || panelDrag || panel.contains(document.activeElement)) return;
-  if (panel.dataset.key === panelKey(anim(), blockAtPlayhead())) return;
+  if (!panel || !S.model || panelDrag) return;
+  if (S.inspectorStale && S.pendingCommit !== 'done') {
+    S.inspectorStale = false; // an element was adopted mid-gesture, which has ended now: Timing and Keyframe can appear
+    return renderInspector();
+  }
+  if (panel.contains(document.activeElement)) return;
+  if (panel.dataset.key === panelKey(editAnim(), loose() ? null : blockAtPlayhead())) return;
   panel.replaceWith(renderPropsPanel());
 }
 let panelTimer;
@@ -3335,7 +3625,7 @@ document.addEventListener('pointerup', () => (panelDrag = false));
 /** One property: key diamond, name (click = toggle plain text), editor showing the value at the playhead. */
 function propRow(prop, at) {
   const decl = at?.block.decls.find((d) => d.prop === prop);
-  const state = decl ? 'keyed' : isAnimated(anim(), prop) ? 'animated' : '';
+  const state = decl ? 'keyed' : isAnimated(editAnim(), prop) ? 'animated' : '';
   let cur = valueAt(prop, at);
   const spec = specOf(prop);
   const row = h('div', { class: `prop ${state}${spec.kind === 'fns' ? ' wide' : ''}` });
@@ -3346,6 +3636,7 @@ function propRow(prop, at) {
     onclick: () => {
       if (decl) unkey(prop);
       else {
+        if (loose()) adoptElement({ rerender: false });
         keyAt(prop, cur);
         renderInspector();
       }
@@ -3358,6 +3649,7 @@ function propRow(prop, at) {
   );
   const set = (v) => {
     cur = v;
+    if (loose()) adoptElement({ rerender: false });
     keyAt(prop, v);
     row.classList.add('keyed');
     row.classList.remove('animated');
@@ -4388,7 +4680,10 @@ $('#save').onclick = saveNow;
 $('#undo').onclick = () => (S.schema ? undoValues() : S.mode2 === 'editor' ? undoEditor() : undo());
 $('#redo').onclick = () => (S.schema ? redoValues() : S.mode2 === 'editor' ? redoEditor() : redo());
 $('#view').onclick = (e) => e.target.dataset.view && setView(e.target.dataset.view);
-$('#add-kf').onclick = () => addKeyframe(playheadPct());
+$('#add-kf').onclick = () => {
+  if (loose()) adoptElement();
+  addKeyframe(playheadPct());
+};
 $('#mode').onclick = (e) => e.target.dataset.mode && setMode(e.target.dataset.mode);
 $('#pick').onclick = () => setPicking(!S.picking);
 $('#anim-select').onchange = (e) => setAnimation(e.target.value);
@@ -4504,7 +4799,7 @@ const SHORTCUTS = [
       [['Mod+Shift+Z', 'Mod+Y'], 'Redo'],
       [['Tab'], 'Switch between Editor and Animate'],
       [['?'], 'Show this overview'],
-      [['Esc'], 'Clear the selection · cancel picking · close this overview'],
+      [['Esc'], 'Clear the selection · close this overview'],
     ],
   },
   {
@@ -4556,7 +4851,7 @@ const SHORTCUTS = [
   {
     title: 'Preview',
     rows: [
-      [['V'], 'Pick an element on the page'],
+      [['V'], 'Pick elements on the page / view mode (the page reacts as usual)'],
       [['Mod+[Wheel]', '[Pinch]'], 'Zoom'],
       [['[Wheel]'], 'Pan when zoomed'],
       [['0', '[Click] the zoom readout'], 'Reset the zoom'],
@@ -4722,7 +5017,7 @@ addEventListener('keydown', (e) => {
     ensurePlayheadVisible();
     updatePlayhead();
   } else if (e.key === 'Escape') {
-    if (S.picking) setPicking(false);
+    if (S.el) clearElement();
     else select(null);
   } else if (e.key.toLowerCase() === 'v' && !mod) {
     setPicking(!S.picking);

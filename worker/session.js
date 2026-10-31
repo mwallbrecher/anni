@@ -817,7 +817,7 @@ body { display: grid !important; place-items: center !important; background: tra
         }
         const r = this.applyEdits(edits);
         for (const f of r.touched) touched.add(f);
-        const changed = touched.size > 0;
+        const changed = touched.size > 0 || r.manual.length > 0; // edits only the agent can place are a save it must hear about
         this.live = null;
         this.dirty = false;
         if (changed) {
