@@ -505,6 +505,11 @@ button.primary { color: var(--offwhite); }
   transition: grid-template-columns var(--unfold), grid-template-rows var(--unfold), border-color 400ms, background 400ms;
 }
 .demo.open { grid-template-columns: minmax(0, 1fr) var(--panel-w, 200px); grid-template-rows: auto auto 1fr; border-color: var(--line-2); background: var(--panel); }
+/* Unfolded for good: plain auto rows and no clipping. The 0fr → 1fr row only exists to animate the unfold –
+   Safari doesn't grow such a clipped fr row again when rows are added or the panel gets taller, which cut the
+   timeline off at the bottom on iPhones. */
+.demo.unfolded { grid-template-rows: auto auto auto; transition: none; }
+.demo.unfolded .demo-tl-wrap { overflow: visible; }
 .demo-bar-wrap { grid-column: 1 / -1; grid-row: 1; height: 0; overflow: hidden; transition: height var(--unfold); } /* its own height: a second fr row would share the timeline's */
 .demo.open .demo-bar-wrap { height: 31px; }
 .demo-bar-wrap .demo-bar { opacity: 0; transition: opacity 400ms 200ms; }
@@ -525,9 +530,12 @@ button.primary { color: var(--offwhite); }
 .demo-bar .demo-reset { color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
 .demo-time { width: 14ch; flex-shrink: 0; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; } /* fixed: the buttons beside it never move */
 .demo-frame { grid-column: 1; grid-row: 2; align-self: stretch; display: block; width: 100%; min-width: 0; height: auto; min-height: 260px; border: 0; background: #111; pointer-events: none; }
-.demo-panel { grid-column: 2; grid-row: 2; min-width: 0; overflow: hidden; }
+/* The panel never sets the window's height (selecting a keyframe used to resize the window): it fills the
+   preview's row and scrolls inside it if a keyframe has more values than fit. */
+.demo-panel { grid-column: 2; grid-row: 2; min-width: 0; overflow: hidden; position: relative; }
 .demo-panel-in {
-  width: var(--panel-w, 200px); height: 100%; padding: 12px; border-left: 1px solid var(--line);
+  position: absolute; inset: 0 auto 0 0; overflow-y: auto; overscroll-behavior: contain;
+  width: var(--panel-w, 200px); padding: 12px; border-left: 1px solid var(--line);
   opacity: 0; transform: translateX(40px); transition: opacity 400ms 150ms, transform var(--unfold);
 }
 .demo-panel-in h3 { margin: 0 0 8px; font-family: var(--display); font-size: 11px; font-weight: 400; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); }
@@ -715,7 +723,7 @@ button.primary { color: var(--offwhite); }
   .install .seg button { flex: 1; height: 28px; }
 }
 @media (max-width: 560px) {
-  .demo-frame { min-height: 220px; }
+  .demo-frame { min-height: 280px; } /* tall enough for the panel's intro text in the narrow column */
   .demo-bar .name { display: none; } /* room for the buttons */
   .demo-bar { gap: 7px; padding: 0 10px; }
   .demo { --panel-w: 140px; }

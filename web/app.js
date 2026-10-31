@@ -373,7 +373,7 @@ function bootHome(head, typed, demo, chat) {
     done = true;
     stopBoot();
     typed.textContent = PROMPT;
-    demo.classList.add('open');
+    unfoldDemo(demo);
     const intro = head.querySelector('.home-intro');
     if (fly) intro.style.opacity = '1'; // it flies instead of fading out
     head.classList.add('ready');
@@ -398,9 +398,21 @@ function bootHome(head, typed, demo, chat) {
   for (let i = 1; i <= PROMPT.length; i++) at((t += 20 + Math.random() * 25), () => (typed.textContent = PROMPT.slice(0, i)));
   at((t += 420), () => {
     head.classList.add('sent');
-    demo.classList.add('open');
+    unfoldDemo(demo);
   });
   at((t += 850), () => finish(true));
+}
+
+/**
+ * Opens the demo window. Once the unfold has played, its rows become plain auto rows (.demo.unfolded): the
+ * animated 0fr → 1fr row clips, and Safari doesn't grow it again when the timeline or the panel get taller.
+ */
+function unfoldDemo(demo) {
+  if (demo.classList.contains('open')) return;
+  demo.classList.add('open');
+  const settle = () => demo.classList.add('unfolded');
+  demo.addEventListener('transitionend', (e) => e.target === demo && e.propertyName === 'grid-template-rows' && settle());
+  setTimeout(settle, 900); // also without a transition (reduced motion, a browser that doesn't animate grid rows)
 }
 
 /**
