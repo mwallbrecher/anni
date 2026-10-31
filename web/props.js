@@ -12,12 +12,13 @@ export const GROUPS = [
   ['Sichtbarkeit', ['opacity', 'visibility', 'filter']],
   ['Farbe', ['color', 'background-color', 'border-color', 'box-shadow']],
   ['Box', ['width', 'height', 'border-radius', 'margin', 'padding', 'top', 'left', 'right', 'bottom']],
-  ['Text', ['font-size', 'letter-spacing', 'line-height', 'text-shadow']],
+  ['Text', ['font-size', 'font-weight', 'letter-spacing', 'line-height', 'text-shadow']],
 ];
 export const KNOWN = GROUPS.flatMap(([, props]) => props);
 
 // kind: 'fns' (list of functions), 'color', 'enum', 'text' (no structured editor), default: numeric tokens.
-// range: slider [min, max, step] for single-number values. units: selectable units. def: value for a new declaration.
+// range: slider [min, max, step] for single-number values, or one per unit ({ px: [...], em: [...] }). units: selectable
+// units. def: value for a new declaration.
 const PROPS = {
   opacity: { range: [0, 1, 0.01], def: '1' },
   scale: { range: [0, 3, 0.01], def: '1' },
@@ -40,9 +41,10 @@ const PROPS = {
   left: { units: LENGTH, def: '0px' },
   right: { units: LENGTH, def: '0px' },
   bottom: { units: LENGTH, def: '0px' },
-  'font-size': { units: ['px', 'em', 'rem', '%'], def: '16px' },
-  'letter-spacing': { units: ['px', 'em'], def: '0px' },
-  'line-height': { units: ['', 'px', 'em'], def: '1.2' },
+  'font-size': { units: ['px', 'em', 'rem', '%'], range: { px: [4, 120, 1], em: [0.25, 6, 0.05], rem: [0.25, 6, 0.05], '%': [25, 400, 1] }, def: '16px' },
+  'font-weight': { range: [100, 900, 1], def: '400' }, // step 1: variable fonts take any weight, static ones snap to theirs
+  'letter-spacing': { units: ['px', 'em'], range: { px: [-10, 40, 0.1], em: [-0.2, 1, 0.005] }, def: '0px' },
+  'line-height': { units: ['', 'px', 'em'], range: { '': [0.5, 3, 0.05], px: [0, 160, 1], em: [0.5, 3, 0.05] }, def: '1.2' },
 };
 export const specOf = (prop) => PROPS[prop] || {};
 export const defaultOf = (prop) => specOf(prop).def ?? '0';
@@ -95,7 +97,7 @@ const UNIT_RANGE = {
   s: [0, 5, 0.05],
   ms: [0, 5000, 10],
 };
-export const rangeFor = (tok, range) => range || UNIT_RANGE[tok.unit] || UNIT_RANGE[''];
+export const rangeFor = (tok, range) => (Array.isArray(range) ? range : range?.[tok.unit]) || UNIT_RANGE[tok.unit] || UNIT_RANGE[''];
 
 /** Splits on a top-level separator (',' or whitespace), ignoring separators inside parentheses. */
 export function splitTop(str, sep) {

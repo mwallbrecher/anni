@@ -2663,6 +2663,7 @@ function targetEl() {
 }
 
 const COMPUTED_NONE = { scale: '1', rotate: '0deg', translate: '0px 0px' };
+const COMPUTED_NORMAL = { 'letter-spacing': '0px', 'line-height': '1.2' }; // `normal` as a number the editors can drag
 const isAnimated = (a, prop) => a.keyframes.some((b) => b.decls.some((d) => d.prop === prop));
 
 /**
@@ -2679,6 +2680,7 @@ function valueAt(prop, at = blockAtPlayhead()) {
   const v = el ? getComputedStyle(el).getPropertyValue(prop).trim() : '';
   if (!v) return animated ? valueNear(a, prop, playheadPct()) : defaultOf(prop);
   if (v === 'none' && COMPUTED_NONE[prop]) return COMPUTED_NONE[prop];
+  if (v === 'normal' && COMPUTED_NORMAL[prop]) return COMPUTED_NORMAL[prop];
   if (specOf(prop).kind === 'color') {
     const c = toRgba(v);
     if (c) return fmtColor(c);
@@ -3558,21 +3560,24 @@ const PANEL = [
   ['Appearance', ['opacity', 'filter', 'background-color', 'color']],
   ['Size', ['width', 'height', 'border-radius']],
 ];
-const PANEL_PROPS = PANEL.flatMap(([, props]) => props);
+// Shown for elements with text: size and weight animate natively (weight smoothly only with a variable font).
+const TYPOGRAPHY = ['font-size', 'font-weight', 'letter-spacing', 'line-height'];
+const panelGroups = () => (targetEl()?.textContent.trim() ? [...PANEL.slice(0, 2), ['Typography', TYPOGRAPHY], ...PANEL.slice(2)] : PANEL);
+const panelProps = () => panelGroups().flatMap(([, props]) => props);
 const extraProps = new Set(); // custom properties the user exposed that aren't in any keyframe yet
 const rawRows = new Set(); // properties the user switched to plain-text editing
 let panelDrag = false;
 
-const panelExtras = (a) => [...new Set([...propsOf(a), ...extraProps])].filter((p) => !PANEL_PROPS.includes(p));
+const panelExtras = (a, shown = panelProps()) => [...new Set([...propsOf(a), ...extraProps])].filter((p) => !shown.includes(p));
 const panelKey = (a, at) =>
-  [...PANEL_PROPS, ...panelExtras(a)].map((p) => `${p}${at?.block.decls.some((d) => d.prop === p) ? '*' : isAnimated(a, p) ? '~' : ''}=${valueAt(p, at)}`).join('|') +
+  [...panelProps(), ...panelExtras(a)].map((p) => `${p}${at?.block.decls.some((d) => d.prop === p) ? '*' : isAnimated(a, p) ? '~' : ''}=${valueAt(p, at)}`).join('|') +
   `#${playheadPct()}`;
 
 function renderPropsPanel() {
   const a = editAnim();
   const at = loose() ? null : blockAtPlayhead();
   const rows = [];
-  for (const [group, props] of PANEL) rows.push(h('div', { class: 'group' }, group), ...props.map((p) => propRow(p, at)));
+  for (const [group, props] of panelGroups()) rows.push(h('div', { class: 'group' }, group), ...props.map((p) => propRow(p, at)));
   const extras = panelExtras(a);
   if (extras.length) rows.push(h('div', { class: 'group' }, 'Other'), ...extras.map((p) => propRow(p, at)));
 
@@ -3785,7 +3790,8 @@ function numField(tok, units, range, withSlider, onChange) {
         },
       })
     : null;
-  const unitOptions = units && [...new Set([...units, tok.unit])].filter(Boolean);
+  // '' stays an option only where the property takes plain numbers (line-height: 1.2), shown as "–".
+  const unitOptions = units && [...new Set([...units, tok.unit])].filter((u) => u || units.includes(''));
   const unit = unitOptions?.length
     ? h(
         'select',
@@ -3795,7 +3801,7 @@ function numField(tok, units, range, withSlider, onChange) {
             onChange();
           },
         },
-        unitOptions.map((u) => h('option', { value: u, selected: u === tok.unit }, u)),
+        unitOptions.map((u) => h('option', { value: u, selected: u === tok.unit }, u || '–')),
       )
     : tok.unit
       ? h('span', { class: 'u' }, tok.unit)
